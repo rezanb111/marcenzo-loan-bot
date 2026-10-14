@@ -1,18 +1,26 @@
 from decimal import Decimal, InvalidOperation
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database.models import Loan, LoanStatus, SupportTicket, TicketStatus, User
-from services.loan_service import get_or_create_user
+from services.loan_service import (
+    approve_and_disburse,
+    get_or_create_user,
+    get_pending_loans,
+    is_admin_user,
+    reject_loan,
+)
+from services.xrocket import XRocketError
 
 router = Router(name="admin")
 settings = get_settings()
@@ -20,8 +28,8 @@ settings = get_settings()
 
 class IsAdmin(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
-        username = (event.from_user.username or "").lower()
-        return username in settings.admin_list
+        u = event.from_user
+        return is_admin_user(u.username if u else None, u.id if u else None)
 
 
 class AdminFSM(StatesGroup):
@@ -42,6 +50,10 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
         await session.scalar(select(func.count(Loan.id)).where(Loan.status == LoanStatus.ACTIVE))
         or 0
     )
+    pending_loans = (
+        await session.scalar(select(func.count(Loan.id)).where(Loan.status == LoanStatus.PENDING))
+        or 0
+    )
     open_tickets = (
         await session.scalar(
             select(func.count(SupportTicket.id)).where(SupportTicket.status == TicketStatus.OPEN)
@@ -54,6 +66,7 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
         "👑 <b>Admin Panel — Marcenzo</b>\n\n"
         f"👥 Users: <b>{total_users}</b>\n"
         f"📋 Total loans: <b>{total_loans}</b>\n"
+        f"⏳ Pending approval: <b>{pending_loans}</b>\n"
         f"🟢 Active loans: <b>{active_loans}</b>\n"
         f"💬 Open tickets: <b>{open_tickets}</b>\n"
         f"💰 Total volume: <b>{total_volume} USDT</b>\n"
@@ -61,28 +74,131 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
 
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="👥 Users", callback_data="admin:users:0", style="primary"),
-        InlineKeyboardButton(text="📋 Loans", callback_data="admin:loans:0", style="primary"),
+        InlineKeyboardButton(text=f"⏳ Pending ({pending_loans})", callback_data="admin:pending"),
     )
     builder.row(
-        InlineKeyboardButton(text="🚫 Block", callback_data="admin:block", style="danger"),
-        InlineKeyboardButton(text="✅ Unblock", callback_data="admin:unblock", style="success"),
+        InlineKeyboardButton(text="👥 Users", callback_data="admin:users:0"),
+        InlineKeyboardButton(text="📋 Active loans", callback_data="admin:loans:0"),
     )
     builder.row(
-        InlineKeyboardButton(
-            text="📈 Set credit limit", callback_data="admin:setlimit", style="primary"
-        ),
+        InlineKeyboardButton(text="🚫 Block", callback_data="admin:block"),
+        InlineKeyboardButton(text="✅ Unblock", callback_data="admin:unblock"),
     )
     builder.row(
-        InlineKeyboardButton(
-            text="💬 Support tickets", callback_data="admin:tickets:0", style="primary"
-        ),
+        InlineKeyboardButton(text="📈 Set credit limit", callback_data="admin:setlimit"),
     )
     builder.row(
-        InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main", style="danger"),
+        InlineKeyboardButton(text="💬 Support tickets", callback_data="admin:tickets:0"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main"),
     )
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:pending", IsAdmin())
+async def admin_pending(callback: CallbackQuery, session: AsyncSession):
+    loans = await get_pending_loans(session)
+    if not loans:
+        await callback.answer("No pending loans", show_alert=True)
+        return
+
+    builder = InlineKeyboardBuilder()
+    lines = ["⏳ <b>Pending loan requests</b>\n"]
+    for loan in loans[:15]:
+        uname = loan.user.username if loan.user else "-"
+        tg = loan.user.telegram_id if loan.user else "-"
+        lines.append(
+            f"#{loan.id} @{uname} (<code>{tg}</code>) — <b>{loan.amount}</b> USDT / {loan.installments_count} inst"
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"✅ Approve #{loan.id}",
+                callback_data=f"admin:loan_approve:{loan.id}",
+            ),
+            InlineKeyboardButton(
+                text=f"❌ Reject #{loan.id}",
+                callback_data=f"admin:loan_reject:{loan.id}",
+            ),
+        )
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel"))
+
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:loan_approve:"), IsAdmin())
+async def admin_loan_approve(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+    loan_id = int(callback.data.split(":")[2])
+    result = await session.execute(
+        select(Loan).where(Loan.id == loan_id).options(selectinload(Loan.user))
+    )
+    loan = result.scalar_one_or_none()
+    if not loan:
+        await callback.answer("Loan not found", show_alert=True)
+        return
+    if loan.status != LoanStatus.PENDING:
+        await callback.answer(f"Already {loan.status.value}", show_alert=True)
+        return
+
+    try:
+        await approve_and_disburse(session, loan)
+        await session.commit()
+        await callback.message.edit_text(
+            f"✅ Loan #{loan.id} <b>approved & paid</b>\n"
+            f"{loan.amount} USDT → @{loan.user.username or loan.user.telegram_id}",
+            parse_mode="HTML",
+        )
+        try:
+            await bot.send_message(
+                loan.user.telegram_id,
+                f"✅ Your loan #{loan.id} of <b>{loan.amount} USDT</b> was approved and sent to your xRocket wallet!",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    except XRocketError as e:
+        logger.error("Approve payout failed: {}", e)
+        await callback.answer(f"xRocket error: {str(e)[:100]}", show_alert=True)
+        try:
+            await callback.message.answer(f"⚠️ Payout failed:\n<code>{e}</code>", parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as e:
+        logger.exception("approve error")
+        await callback.answer(str(e)[:120], show_alert=True)
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:loan_reject:"), IsAdmin())
+async def admin_loan_reject(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+    loan_id = int(callback.data.split(":")[2])
+    result = await session.execute(
+        select(Loan).where(Loan.id == loan_id).options(selectinload(Loan.user))
+    )
+    loan = result.scalar_one_or_none()
+    if not loan:
+        await callback.answer("Loan not found", show_alert=True)
+        return
+    if loan.status != LoanStatus.PENDING:
+        await callback.answer(f"Already {loan.status.value}", show_alert=True)
+        return
+
+    await reject_loan(session, loan)
+    await session.commit()
+    await callback.message.edit_text(f"❌ Loan #{loan.id} rejected.")
+    try:
+        await bot.send_message(
+            loan.user.telegram_id,
+            f"❌ Your loan request #{loan.id} was rejected by admin.",
+        )
+    except Exception:
+        pass
     await callback.answer()
 
 
@@ -109,7 +225,7 @@ async def admin_users(callback: CallbackQuery, session: AsyncSession):
     if page > 0:
         builder.button(text="⬅️ Prev", callback_data=f"admin:users:{page - 1}")
     builder.button(text="Next ➡️", callback_data=f"admin:users:{page + 1}")
-    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel"))
 
     await callback.message.edit_text(
         f"👥 <b>Users</b> (page {page + 1})\n\n" + "\n".join(lines),
@@ -146,7 +262,7 @@ async def admin_loans(callback: CallbackQuery, session: AsyncSession):
     if page > 0:
         builder.button(text="⬅️ Prev", callback_data=f"admin:loans:{page - 1}")
     builder.button(text="Next ➡️", callback_data=f"admin:loans:{page + 1}")
-    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel"))
 
     await callback.message.edit_text(
         f"📋 <b>Active loans</b>\n\n" + "\n".join(lines),
@@ -185,7 +301,6 @@ async def admin_block_reason(message: Message, session: AsyncSession, state: FSM
     reason = (message.text or "-").strip()
     if reason == "-":
         reason = "Blocked by admin"
-
     user = await get_or_create_user(session, tg_id)
     user.is_blocked = True
     user.block_reason = reason
@@ -279,18 +394,12 @@ async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
         uname = tk.user.username if tk.user else "-"
         lines.append(f"#{tk.id} @{uname}\n{tk.message[:80]}...")
         builder.row(
-            InlineKeyboardButton(
-                text=f"Reply #{tk.id}",
-                callback_data=f"admin:reply:{tk.id}",
-                style="success",
-            )
+            InlineKeyboardButton(text=f"Reply #{tk.id}", callback_data=f"admin:reply:{tk.id}")
         )
-    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel"))
 
     await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML",
+        "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML"
     )
     await callback.answer()
 
@@ -305,7 +414,7 @@ async def admin_reply_start(callback: CallbackQuery, state: FSMContext):
 
 
 @router.message(AdminFSM.reply_ticket, IsAdmin())
-async def admin_reply_send(message: Message, session: AsyncSession, state: FSMContext, bot):
+async def admin_reply_send(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
     data = await state.get_data()
     ticket_id = data["reply_ticket_id"]
     result = await session.execute(
@@ -342,11 +451,7 @@ async def cmd_block(message: Message, session: AsyncSession):
     if len(parts) < 2:
         await message.answer("Usage: /block <id> [reason]", parse_mode="HTML")
         return
-    try:
-        tg_id = int(parts[1])
-    except ValueError:
-        await message.answer("Invalid id")
-        return
+    tg_id = int(parts[1])
     reason = parts[2] if len(parts) > 2 else "Blocked by admin"
     user = await get_or_create_user(session, tg_id)
     user.is_blocked = True
