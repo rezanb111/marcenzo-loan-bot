@@ -18,17 +18,17 @@ async def show_profile(callback: CallbackQuery, session: AsyncSession):
     )
 
     text = (
-        f"👤 <b>پروفایل</b>\n\n"
+        f"👤 <b>Profile</b>\n\n"
         f"ID: <code>{user.telegram_id}</code>\n"
-        f"یوزرنیم: @{user.username or '-'}\n"
-        f"زبان: {user.language}\n\n"
-        f"💳 سقف اعتبار: <b>{user.credit_limit} USDT</b>\n"
-        f"✅ وام موفق: <b>{user.successful_loans}</b>\n"
-        f"📤 کل وام گرفته: <b>{user.total_borrowed} USDT</b>\n"
-        f"📥 کل بازپرداخت: <b>{user.total_repaid} USDT</b>\n"
+        f"Username: @{user.username or '-'}\n"
+        f"Language: {user.language}\n\n"
+        f"💳 Credit limit: <b>{user.credit_limit} USDT</b>\n"
+        f"✅ Successful loans: <b>{user.successful_loans}</b>\n"
+        f"📤 Total borrowed: <b>{user.total_borrowed} USDT</b>\n"
+        f"📥 Total repaid: <b>{user.total_repaid} USDT</b>\n"
     )
     if user.is_blocked:
-        text += f"\n🚫 <b>مسدود</b>: {user.block_reason or '-'}"
+        text += f"\n🚫 <b>Blocked</b>: {user.block_reason or '-'}"
 
     await callback.message.edit_text(
         text,
