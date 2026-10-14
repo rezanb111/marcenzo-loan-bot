@@ -1,7 +1,4 @@
-"""
-Marcenzo Loan Bot — professional multi-language loan bot with xRocket Pay.
-Complete production-ready version.
-"""
+"""Marcenzo Loan Bot — production entrypoint."""
 
 import asyncio
 from pathlib import Path
@@ -14,7 +11,7 @@ from loguru import logger
 
 from config import get_settings
 from database.session import init_db
-from handlers import admin, loan, profile, repay, start
+from handlers import admin, loan, profile, repay, start, support
 from middlewares.db import DbSessionMiddleware
 
 
@@ -32,8 +29,8 @@ def setup_logging() -> None:
 async def main() -> None:
     setup_logging()
     settings = get_settings()
-
     Path("data").mkdir(exist_ok=True)
+    Path("media").mkdir(exist_ok=True)
 
     await init_db()
     logger.info("Database initialized")
@@ -43,15 +40,13 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher(storage=MemoryStorage())
-
-    # Middlewares
     dp.update.middleware(DbSessionMiddleware())
 
-    # Routers (order matters for filters)
     dp.include_router(start.router)
     dp.include_router(loan.router)
     dp.include_router(repay.router)
     dp.include_router(profile.router)
+    dp.include_router(support.router)
     dp.include_router(admin.router)
 
     logger.info("🚀 Marcenzo Loan Bot started")
