@@ -21,9 +21,11 @@ TEXTS: dict[str, dict[str, str]] = {
         "language_set": "Language set to English ✅",
         "main_menu": (
             "🏠 <b>Main Menu</b>\n\n"
-            "Your credit limit: <b>{limit} USDT</b>\n"
-            "Successful loans: <b>{success}</b>\n\n"
-            "💡 Tip: open <b>Guide</b> for full help. Loans include <b>1% interest</b> for investors."
+            "🏅 Level: <b>{level}</b> ({level_name})\n"
+            "💳 Credit limit: <b>{limit} USDT</b>\n"
+            "✅ Successful loans: <b>{success}</b>\n"
+            "📊 Next level in: <b>{to_next}</b> successful repayments\n\n"
+            "💡 Guide · 1% interest · Admin approval · Optional password"
         ),
         "request_loan": "Request Loan",
         "my_loans": "My Loans",
@@ -53,7 +55,7 @@ TEXTS: dict[str, dict[str, str]] = {
             "• You repay principal + <b>1% interest</b>\n"
             "• Interest goes to the investment fund\n"
             "• Admin must approve before payout\n"
-            "• Limit grows after 3 successful loans\n\n"
+            "• Every <b>3</b> successful loans → level up + credit boost\n\n"
             "Your limit: <b>{limit} USDT</b> · Min: <b>{min_a} USDT</b>\n"
             "Type an amount or use quick buttons:"
         ),
@@ -63,9 +65,11 @@ TEXTS: dict[str, dict[str, str]] = {
         "language_set": "زبان به فارسی تنظیم شد ✅",
         "main_menu": (
             "🏠 <b>منوی اصلی</b>\n\n"
-            "سقف اعتبار: <b>{limit} USDT</b>\n"
-            "وام موفق: <b>{success}</b>\n\n"
-            "💡 راهنما را بخوانید. روی هر وام <b>۱٪ سود</b> برای سرمایه‌گذاران است."
+            "🏅 لول: <b>{level}</b> ({level_name})\n"
+            "💳 سقف اعتبار: <b>{limit} USDT</b>\n"
+            "✅ وام موفق: <b>{success}</b>\n"
+            "📊 تا لول بعدی: <b>{to_next}</b> تسویه موفق\n\n"
+            "💡 راهنما · سود ۱٪ · تأیید ادمین · رمز اختیاری"
         ),
         "request_loan": "درخواست وام",
         "my_loans": "وام‌های من",
@@ -92,9 +96,9 @@ TEXTS: dict[str, dict[str, str]] = {
         "loan_guide": (
             "🚀 <b>درخواست وام</b>\n\n"
             "• از ۰.۱۰ تا سقف اعتبار\n"
-            "• بازپرداخت اصل + <b>۱٪ سود</b>\n"
-            "• سود برای صندوق سرمایه‌گذاران\n"
-            "• نیاز به تأیید ادمین\n\n"
+            "• اصل + <b>۱٪ سود</b>\n"
+            "• هر <b>۳</b> تسویه موفق → لول بالاتر\n"
+            "• تأیید ادمین قبل از پرداخت\n\n"
             "سقف شما: <b>{limit} USDT</b>"
         ),
     },
@@ -113,3 +117,21 @@ def t(key: str, lang: str = "en", **kwargs: Any) -> str:
         except (KeyError, ValueError):
             return text
     return text
+
+
+def menu_kwargs(user) -> dict:
+    """Common format args for main_menu."""
+    success = int(getattr(user, "successful_loans", 0) or 0)
+    level = int(getattr(user, "level", 1) or 1)
+    n = 3
+    to_next = n - (success % n) if success % n != 0 else n
+    if success > 0 and success % n == 0:
+        to_next = n  # just leveled; next cycle
+    name = getattr(user, "level_name", None) or f"Level {level}"
+    return {
+        "limit": user.credit_limit,
+        "success": success,
+        "level": level,
+        "level_name": name,
+        "to_next": to_next,
+    }
