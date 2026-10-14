@@ -16,7 +16,7 @@ from keyboards.inline import (
     installments_keyboard,
     main_menu_keyboard,
 )
-from locales import t
+from locales import menu_kwargs, t
 from services.loan_service import (
     create_loan_request,
     get_active_loans,
@@ -24,6 +24,7 @@ from services.loan_service import (
     get_or_create_user,
     is_admin_user,
 )
+from utils.media import send_section
 
 router = Router(name="loan")
 settings = get_settings()
@@ -57,10 +58,11 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         limit=user.credit_limit,
         min_a=settings.min_loan_amount,
     )
-    await callback.message.edit_text(
+    await send_section(
+        callback,
         text,
+        section="loan",
         reply_markup=amount_keyboard(float(user.credit_limit), user.language),
-        parse_mode="HTML",
     )
     await callback.answer()
 
@@ -71,10 +73,16 @@ async def choose_amount_btn(callback: CallbackQuery, session: AsyncSession, stat
     await state.update_data(amount=amount)
     await state.set_state(LoanFSM.installments)
     user = await get_or_create_user(session, callback.from_user.id)
-    await callback.message.edit_text(
-        t("choose_installments", user.language),
-        reply_markup=installments_keyboard(user.language),
-    )
+    try:
+        await callback.message.edit_text(
+            t("choose_installments", user.language),
+            reply_markup=installments_keyboard(user.language),
+        )
+    except Exception:
+        await callback.message.answer(
+            t("choose_installments", user.language),
+            reply_markup=installments_keyboard(user.language),
+        )
     await callback.answer()
 
 
@@ -172,6 +180,7 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         note = (
             f"🔔 <b>New loan request #{loan.id}</b>\n\n"
             f"User: @{user.username or '-'} (<code>{user.telegram_id}</code>)\n"
+            f"Level: {user.level} ({user.level_name})\n"
             f"Principal: <b>{amount} USDT</b> + 1% interest\n"
             f"Total repay: {loan.total_repay} · {count} inst\n"
             f"Limit: {user.credit_limit} · Success: {user.successful_loans}"
@@ -184,7 +193,7 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
 
         is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
         await callback.message.answer(
-            t("main_menu", user.language, limit=user.credit_limit, success=user.successful_loans),
+            t("main_menu", user.language, **menu_kwargs(user)),
             reply_markup=main_menu_keyboard(user.language, is_admin=is_admin),
             parse_mode="HTML",
         )
@@ -214,7 +223,7 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
     builder = InlineKeyboardBuilder()
     lines = [
         "⚡ <b>My Loans</b>\n\n"
-        "Pending = waiting admin. Active = repay installments (principal + 1% interest).\n"
+        "Pending = waiting admin. Active = repay (principal + 1% interest).\n"
     ]
     for loan in loans:
         paid = sum(1 for i in loan.installments if i.status.value == "paid")
