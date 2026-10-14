@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Marcenzo — Premium Crypto Lending on Telegram</title>
+<meta name="description" content="Marcenzo Loan Bot: peer loans via xRocket Pay, progressive credit, levels, 1% investor yield, captcha security." />
+<meta property="og:title" content="Marcenzo Loan Bot" />
+<meta property="og:description" content="Smart credit · investor fund · admin-approved payouts" />
+<meta property="og:type" content="website" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#05060f;--card:rgba(18,22,40,.75);--line:rgba(120,140,255,.16);
+  --text:#e8ecff;--muted:#9aa3c7;--accent:#6c7cff;--cyan:#00e5c0;--gold:#f5c451;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:"Plus Jakarta Sans",system-ui,sans-serif;background:var(--bg);color:var(--text);overflow-x:hidden}
+.bg{position:fixed;inset:0;z-index:-2;background:
+  radial-gradient(ellipse 80% 50% at 15% -10%,#1a1f5a 0%,transparent 55%),
+  radial-gradient(ellipse 60% 40% at 90% 5%,#0a3d3a 0%,transparent 50%),
+  radial-gradient(ellipse 50% 50% at 50% 110%,#2a1040 0%,transparent 55%),var(--bg)}
+.grid{position:fixed;inset:0;z-index:-1;background-image:
+  linear-gradient(rgba(108,124,255,.04) 1px,transparent 1px),
+  linear-gradient(90deg,rgba(108,124,255,.04) 1px,transparent 1px);
+  background-size:48px 48px;mask-image:radial-gradient(ellipse at center,black 25%,transparent 75%)}
+.blob{position:absolute;border-radius:50%;filter:blur(70px);opacity:.32;pointer-events:none;animation:drift 16s ease-in-out infinite alternate}
+.b1{width:300px;height:300px;background:#6c7cff;top:8%;left:-6%}
+.b2{width:240px;height:240px;background:#00e5c0;bottom:12%;right:4%;animation-delay:-5s}
+.b3{width:180px;height:180px;background:#f5c451;top:45%;left:42%;animation-delay:-10s}
+@keyframes drift{to{transform:translate(36px,-28px) scale(1.12)}}
+header{position:sticky;top:0;z-index:50;backdrop-filter:blur(16px);background:rgba(5,6,15,.7);border-bottom:1px solid var(--line)}
+.wrap{max-width:1100px;margin:0 auto;padding:18px 24px;display:flex;align-items:center;justify-content:space-between}
+.logo{font-weight:800;letter-spacing:.06em;font-size:1.15rem;background:linear-gradient(120deg,var(--cyan),var(--accent),var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent}
+nav a{color:var(--muted);text-decoration:none;margin-left:18px;font-size:.9rem;font-weight:500;transition:color .2s}
+nav a:hover{color:var(--text)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 20px;border-radius:14px;font-weight:600;text-decoration:none;border:1px solid transparent;transition:.25s;font-size:.95rem}
+.btn-p{background:linear-gradient(135deg,#6c7cff,#4b5cff);color:#fff;box-shadow:0 12px 40px rgba(108,124,255,.35)}
+.btn-p:hover{transform:translateY(-2px);box-shadow:0 16px 48px rgba(108,124,255,.5)}
+.btn-g{background:rgba(255,255,255,.04);color:var(--text);border-color:var(--line)}
+.btn-g:hover{border-color:var(--accent)}
+.hero{max-width:1100px;margin:48px auto 72px;padding:0 24px;display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center}
+@media(max-width:900px){.hero{grid-template-columns:1fr}nav{display:none}.hdr-cta{display:none}}
+.chip{display:inline-block;font-size:.72rem;padding:5px 12px;border-radius:999px;background:rgba(0,229,192,.1);color:var(--cyan);border:1px solid rgba(0,229,192,.28);margin-bottom:14px;font-weight:600;letter-spacing:.02em}
+h1{font-size:clamp(2.1rem,4.8vw,3.35rem);line-height:1.1;margin-bottom:16px;font-weight:800}
+h1 span{background:linear-gradient(100deg,var(--cyan),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{color:var(--muted);font-size:1.05rem;line-height:1.65;margin-bottom:26px;max-width:520px}
+.cta{display:flex;gap:12px;flex-wrap:wrap}
+.panel{perspective:1200px}
+.card3d{background:var(--card);border:1px solid var(--line);border-radius:24px;padding:26px;backdrop-filter:blur(20px);
+  transform:rotateY(-7deg) rotateX(4deg);box-shadow:0 30px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06);transition:transform .4s}
+.card3d:hover{transform:rotateY(-1deg) rotateX(1deg) scale(1.02)}
+.stat-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:16px}
+.stat{background:rgba(0,0,0,.28);border-radius:14px;padding:14px;border:1px solid var(--line)}
+.stat b{display:block;font-size:1.25rem;color:var(--cyan)}
+.stat span{font-size:.75rem;color:var(--muted)}
+section{max-width:1100px;margin:0 auto;padding:28px 24px 64px}
+section h2{font-size:1.75rem;margin-bottom:10px;font-weight:800}
+.sub{color:var(--muted);margin-bottom:28px;max-width:560px;line-height:1.55}
+.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.feat{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;backdrop-filter:blur(12px);transition:transform .25s,border-color .25s}
+.feat:hover{transform:translateY(-4px);border-color:rgba(108,124,255,.45)}
+.feat .ico{font-size:1.5rem;margin-bottom:8px}
+.feat h3{font-size:1.02rem;margin-bottom:6px}
+.feat p{color:var(--muted);font-size:.9rem;line-height:1.5}
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+@media(max-width:700px){.flow{grid-template-columns:1fr 1fr}}
+.step{text-align:center;padding:18px 12px;border-radius:16px;background:rgba(108,124,255,.08);border:1px solid var(--line)}
+.step .n{width:36px;height:36px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;font-weight:700;background:linear-gradient(135deg,var(--accent),#3d4fd8)}
+.ranks{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px}
+.rank{padding:10px 14px;border-radius:12px;border:1px solid var(--line);background:rgba(0,0,0,.25);font-size:.85rem;font-weight:600}
+.rank span{color:var(--gold);margin-right:6px}
+.formula{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:560px;font-family:ui-monospace,monospace;font-size:.92rem;color:var(--cyan)}
+details{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 18px;margin-bottom:10px}
+details summary{cursor:pointer;font-weight:600}
+details p{color:var(--muted);margin-top:10px;font-size:.92rem;line-height:1.5}
+.band{max-width:1100px;margin:20px auto 80px;padding:40px 28px;border-radius:24px;text-align:center;
+  background:linear-gradient(135deg,rgba(108,124,255,.2),rgba(0,229,192,.12));border:1px solid var(--line)}
+.band h2{margin-bottom:12px}
+.band p{color:var(--muted);margin-bottom:20px}
+footer{text-align:center;padding:36px 24px 56px;color:var(--muted);font-size:.88rem;border-top:1px solid var(--line)}
+footer a{color:var(--cyan);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="bg"></div><div class="grid"></div>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<header>
+  <div class="wrap">
+    <div class="logo">MARCENZO</div>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#levels">Levels</a>
+      <a href="#invest">Invest</a>
+      <a href="#security">Security</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <a class="btn btn-p hdr-cta" id="openBotTop" href="https://t.me/marcenzo" target="_blank" rel="noopener">Open Bot</a>
+  </div>
+</header>
+
+<main class="hero">
+  <div>
+    <div class="chip">Telegram · xRocket Pay · Multi-language</div>
+    <h1>Peer loans with <span>smart credit</span> & investor yield</h1>
+    <p class="lead">Borrow from 0.10 USDT with progressive limits and ranks. Every loan carries <strong>1% interest</strong> shared with the community fund. Admin-approved payouts via xRocket.</p>
+    <div class="cta">
+      <a class="btn btn-p" id="openBotHero" href="https://t.me/marcenzo" target="_blank" rel="noopener">Launch in Telegram</a>
+      <a class="btn btn-g" href="#how">See flow</a>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="card3d">
+      <h3 style="margin-bottom:8px">Product snapshot</h3>
+      <p style="color:var(--muted);font-size:.9rem;line-height:1.5">Colored buttons · Premium emoji · Levels · Captcha · Optional password · Investment pool</p>
+      <div class="stat-row">
+        <div class="stat"><b>0.10–100</b><span>USDT loan range</span></div>
+        <div class="stat"><b>1%</b><span>Interest to investors</span></div>
+        <div class="stat"><b>×2</b><span>Limit every 3 OK loans</span></div>
+        <div class="stat"><b>7 ranks</b><span>Bronze → Legend</span></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<section id="features">
+  <h2>Built for real usage</h2>
+  <p class="sub">Approval workflow, payouts, repayments, levels, and a fund that earns from borrower interest.</p>
+  <div class="features">
+    <div class="feat"><div class="ico">🚀</div><h3>Request Loan</h3><p>Free amount from 0.10 USDT. Installments 3–10. Admin must approve before xRocket payout.</p></div>
+    <div class="feat"><div class="ico">📈</div><h3>Progressive credit</h3><p>Start at 5 USDT. After every 3 successful repayments, limit can double up to 100.</p></div>
+    <div class="feat"><div class="ico">🏅</div><h3>Levels</h3><p>Every 3 full repayments → level up: Bronze, Silver, Gold, Platinum, Diamond, Master, Legend.</p></div>
+    <div class="feat"><div class="ico">💎</div><h3>Investment fund</h3><p>Deposit USDT into the pool. Earn a proportional share of the 1% loan interest.</p></div>
+    <div class="feat"><div class="ico">🛡️</div><h3>Security gate</h3><p>Advanced captcha on entry. Optional password — only if the user chooses to set one.</p></div>
+    <div class="feat"><div class="ico">⚡</div><h3>xRocket Pay</h3><p>Disbursements and repayment invoices through the official Pay API.</p></div>
+  </div>
+</section>
+
+<section id="how">
+  <h2>How a loan works</h2>
+  <p class="sub">Transparent path from request to repayment — with investor yield on completion.</p>
+  <div class="flow">
+    <div class="step"><div class="n">1</div><b>Request</b><p style="color:var(--muted);font-size:.85rem;margin-top:6px">Amount & installments</p></div>
+    <div class="step"><div class="n">2</div><b>Approve</b><p style="color:var(--muted);font-size:.85rem;margin-top:6px">Admin reviews</p></div>
+    <div class="step"><div class="n">3</div><b>Payout</b><p style="color:var(--muted);font-size:.85rem;margin-top:6px">USDT via xRocket</p></div>
+    <div class="step"><div class="n">4</div><b>Repay</b><p style="color:var(--muted);font-size:.85rem;margin-top:6px">Principal + 1% → fund</p></div>
+  </div>
+</section>
+
+<section id="levels">
+  <h2>Levels & ranks</h2>
+  <p class="sub">Every <strong>3 successful full loan repayments</strong> increases your level and can boost credit.</p>
+  <div class="ranks">
+    <div class="rank"><span>1</span>Bronze</div>
+    <div class="rank"><span>2</span>Silver</div>
+    <div class="rank"><span>3</span>Gold</div>
+    <div class="rank"><span>4</span>Platinum</div>
+    <div class="rank"><span>5</span>Diamond</div>
+    <div class="rank"><span>6</span>Master</div>
+    <div class="rank"><span>7</span>Legend</div>
+  </div>
+</section>
+
+<section id="invest">
+  <h2>Invest & earn</h2>
+  <p class="sub">Your share of the fund determines your cut of each completed loan’s interest.</p>
+  <div class="formula">reward = interest × (your_stake ÷ pool_total)</div>
+  <p class="sub" style="margin-top:14px">Example: 10% of the pool → 10% of every 1% fee. No fake APY charts — proportional and on completion only.</p>
+</section>
+
+<section id="security">
+  <h2>Security</h2>
+  <div class="features">
+    <div class="feat"><div class="ico">🔐</div><h3>Captcha gate</h3><p>Math, emoji, number sequences, and word challenges. Five fails locks until /start again.</p></div>
+    <div class="feat"><div class="ico">🔑</div><h3>Optional password</h3><p>Set from Profile → Security. Hashed at rest. Skip forever if you do not want it.</p></div>
+    <div class="feat"><div class="ico">✅</div><h3>Admin approval</h3><p>No payout leaves the system without admin confirm on each loan request.</p></div>
+  </div>
+</section>
+
+<section id="faq">
+  <h2>FAQ</h2>
+  <details><summary>What is the minimum loan?</summary><p>From 0.10 USDT up to your personal credit limit (starts at 5, max 100).</p></details>
+  <details><summary>Who receives the 1% interest?</summary><p>Active investors in the community fund, proportional to their stake, when a loan is fully repaid.</p></details>
+  <details><summary>How do levels work?</summary><p>Complete 3 full loan repayments successfully → level +1 and potential credit limit upgrade.</p></details>
+  <details><summary>Do I need xRocket?</summary><p>Yes. Open @xRocket at least once so payouts and invoices can reach your Telegram-linked wallet.</p></details>
+  <details><summary>Is the password required?</summary><p>No. Captcha is required on entry; password is fully optional.</p></details>
+</section>
+
+<div class="band">
+  <h2>Start in Telegram in under a minute</h2>
+  <p>Captcha → menu → request or invest. Admins: @marcenzo · @shibainuo</p>
+  <a class="btn btn-p" id="openBotBand" href="https://t.me/marcenzo" target="_blank" rel="noopener">Open Marcenzo Bot</a>
+</div>
+
+<footer>
+  <p><strong>Marcenzo</strong> · Telegram · xRocket Pay</p>
+  <p style="margin-top:8px">Not financial advice · Admin-managed P2P tooling</p>
+  <p style="margin-top:14px">
+    <a href="https://github.com/rezanb111/marcenzo-loan-bot">GitHub</a>
+    · <a href="https://t.me/marcenzo">Support</a>
+  </p>
+</footer>
+
+<script>
+// Easy config — change bot username here
+const BOT = 'marcenzo'; // t.me/<BOT>
+const url = 'https://t.me/' + BOT;
+['openBotTop','openBotHero','openBotBand'].forEach(id=>{
+  const el = document.getElementById(id);
+  if (el) el.href = url;
+});
+</script>
+</body>
+</html>
