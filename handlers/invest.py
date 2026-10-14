@@ -1,7 +1,7 @@
 """Investment fund — users deposit USDT; earn share of 1% loan interest."""
 
-from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database.models import Investment, InvestmentStatus
-from keyboards.inline import EMOJI, _btn, back_keyboard
+from keyboards.inline import EMOJI, _btn
 from services.loan_service import fund_stats, get_or_create_user
 from services.xrocket import get_xrocket
 
@@ -37,9 +37,7 @@ class InvestFSM(StatesGroup):
     amount = State()
 
 
-@router.callback_query(F.data == "invest")
-async def invest_home(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
-    await state.clear()
+async def _show_invest_home(callback: CallbackQuery, session: AsyncSession):
     user = await get_or_create_user(session, callback.from_user.id)
     stats = await fund_stats(session)
     text = GUIDE.format(
@@ -51,15 +49,36 @@ async def invest_home(callback: CallbackQuery, session: AsyncSession, state: FSM
     )
     builder = InlineKeyboardBuilder()
     builder.row(
-        _btn("💵 Deposit to fund", "invest:deposit", style="success",
-             icon_custom_emoji_id=EMOJI.get("green"))
+        _btn(
+            "💵 Deposit to fund",
+            "invest:deposit",
+            style="success",
+            icon_custom_emoji_id=EMOJI.get("green"),
+        )
     )
     builder.row(
-        _btn("✅ I paid — activate", "invest:activate", style="primary",
-             icon_custom_emoji_id=EMOJI.get("check"))
+        _btn(
+            "✅ I paid — activate",
+            "invest:activate",
+            style="primary",
+            icon_custom_emoji_id=EMOJI.get("check"),
+        )
     )
-    builder.row(_btn("🔙 Back", "menu:main", style="danger", icon_custom_emoji_id=EMOJI.get("down")))
+    builder.row(
+        _btn(
+            "🔙 Back",
+            "menu:main",
+            style="danger",
+            icon_custom_emoji_id=EMOJI.get("down"),
+        )
+    )
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "invest")
+async def invest_home(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    await state.clear()
+    await _show_invest_home(callback, session)
     await callback.answer()
 
 
@@ -67,7 +86,8 @@ async def invest_home(callback: CallbackQuery, session: AsyncSession, state: FSM
 async def invest_deposit_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(InvestFSM.amount)
     await callback.message.edit_text(
-        f"💵 Enter deposit amount in USDT (min {settings.min_invest_amount}):"
+        f"💵 Enter deposit amount in USDT (min {settings.min_invest_amount}):\n\n"
+        f"After paying the invoice, return here and tap Activate."
     )
     await callback.answer()
 
@@ -115,9 +135,7 @@ async def invest_deposit_amount(message: Message, session: AsyncSession, state: 
                 or invoice.get("url")
                 or (invoice.get("data") or {}).get("link")
             )
-            inv.invoice_id = str(
-                invoice.get("invoiceId") or invoice.get("id") or ""
-            )
+            inv.invoice_id = str(invoice.get("invoiceId") or invoice.get("id") or "")
             inv.invoice_link = link
         await session.commit()
         await state.clear()
@@ -126,7 +144,7 @@ async def invest_deposit_amount(message: Message, session: AsyncSession, state: 
         if link:
             kb.row(InlineKeyboardButton(text="💳 Pay invoice", url=link))
         kb.row(InlineKeyboardButton(text="✅ I paid — activate", callback_data="invest:activate"))
-        kb.row(InlineKeyboardButton(text="🔙 Back", callback_data="invest"))
+        kb.row(InlineKeyboardButton(text="🔙 Fund", callback_data="invest"))
 
         await message.answer(
             f"💎 Deposit <b>{amount} USDT</b> created (#{inv.id}).\n"
@@ -136,19 +154,16 @@ async def invest_deposit_amount(message: Message, session: AsyncSession, state: 
         )
     except Exception as e:
         logger.exception("invest invoice")
-        inv.status = InvestmentStatus.PENDING
         await session.commit()
         await state.clear()
         await message.answer(
-            f"Deposit #{inv.id} recorded as pending.\n"
-            f"Invoice error: {e}\n"
-            f"Pay manually to the fund wallet / admin, then activate."
+            f"Deposit #{inv.id} pending.\nInvoice error: {e}\n"
+            f"Contact admin or try Activate after manual payment."
         )
 
 
 @router.callback_query(F.data == "invest:activate")
 async def invest_activate(callback: CallbackQuery, session: AsyncSession):
-    """Mark newest pending investment as active (admin can later verify invoice)."""
     user = await get_or_create_user(session, callback.from_user.id)
     result = await session.execute(
         select(Investment)
@@ -168,5 +183,5 @@ async def invest_activate(callback: CallbackQuery, session: AsyncSession):
     inv.activated_at = datetime.now(timezone.utc)
     user.invested_amount += inv.amount
     await session.commit()
-    await callback.answer("Activated!", show_alert=True)
-    await invest_home(callback, session, await callback.bot.get_current())  # type: ignore
+    await callback.answer("Deposit activated!", show_alert=True)
+    await _show_invest_home(callback, session)
