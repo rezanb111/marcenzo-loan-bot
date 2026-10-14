@@ -38,40 +38,48 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
     await state.clear()
     total_users = await session.scalar(select(func.count(User.id))) or 0
     total_loans = await session.scalar(select(func.count(Loan.id))) or 0
-    active_loans = await session.scalar(
-        select(func.count(Loan.id)).where(Loan.status == LoanStatus.ACTIVE)
-    ) or 0
-    open_tickets = await session.scalar(
-        select(func.count(SupportTicket.id)).where(SupportTicket.status == TicketStatus.OPEN)
-    ) or 0
+    active_loans = (
+        await session.scalar(select(func.count(Loan.id)).where(Loan.status == LoanStatus.ACTIVE))
+        or 0
+    )
+    open_tickets = (
+        await session.scalar(
+            select(func.count(SupportTicket.id)).where(SupportTicket.status == TicketStatus.OPEN)
+        )
+        or 0
+    )
     total_volume = await session.scalar(select(func.sum(Loan.amount))) or Decimal("0")
 
     text = (
-        "👑 <b>پنل ادمین — Marcenzo</b>\n\n"
-        f"👥 کاربران: <b>{total_users}</b>\n"
-        f"📋 کل وام‌ها: <b>{total_loans}</b>\n"
-        f"🟢 وام فعال: <b>{active_loans}</b>\n"
-        f"💬 تیکت باز: <b>{open_tickets}</b>\n"
-        f"💰 حجم کل: <b>{total_volume} USDT</b>\n"
+        "👑 <b>Admin Panel — Marcenzo</b>\n\n"
+        f"👥 Users: <b>{total_users}</b>\n"
+        f"📋 Total loans: <b>{total_loans}</b>\n"
+        f"🟢 Active loans: <b>{active_loans}</b>\n"
+        f"💬 Open tickets: <b>{open_tickets}</b>\n"
+        f"💰 Total volume: <b>{total_volume} USDT</b>\n"
     )
 
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="👥 کاربران", callback_data="admin:users:0", style="primary"),
-        InlineKeyboardButton(text="📋 وام‌ها", callback_data="admin:loans:0", style="primary"),
+        InlineKeyboardButton(text="👥 Users", callback_data="admin:users:0", style="primary"),
+        InlineKeyboardButton(text="📋 Loans", callback_data="admin:loans:0", style="primary"),
     )
     builder.row(
-        InlineKeyboardButton(text="🚫 بلاک", callback_data="admin:block", style="danger"),
-        InlineKeyboardButton(text="✅ آنبلاک", callback_data="admin:unblock", style="success"),
+        InlineKeyboardButton(text="🚫 Block", callback_data="admin:block", style="danger"),
+        InlineKeyboardButton(text="✅ Unblock", callback_data="admin:unblock", style="success"),
     )
     builder.row(
-        InlineKeyboardButton(text="📈 تعیین سقف اعتبار", callback_data="admin:setlimit", style="primary"),
+        InlineKeyboardButton(
+            text="📈 Set credit limit", callback_data="admin:setlimit", style="primary"
+        ),
     )
     builder.row(
-        InlineKeyboardButton(text="💬 تیکت‌های پشتیبانی", callback_data="admin:tickets:0", style="primary"),
+        InlineKeyboardButton(
+            text="💬 Support tickets", callback_data="admin:tickets:0", style="primary"
+        ),
     )
     builder.row(
-        InlineKeyboardButton(text="🏠 منوی اصلی", callback_data="menu:main", style="danger"),
+        InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main", style="danger"),
     )
 
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -81,13 +89,12 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
 @router.callback_query(F.data.startswith("admin:users:"), IsAdmin())
 async def admin_users(callback: CallbackQuery, session: AsyncSession):
     page = int(callback.data.split(":")[2])
-    limit, offset = 10, page * 10
     result = await session.execute(
-        select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)
+        select(User).order_by(User.created_at.desc()).offset(page * 10).limit(10)
     )
     users = result.scalars().all()
     if not users:
-        await callback.answer("کاربر بیشتری نیست", show_alert=True)
+        await callback.answer("No more users", show_alert=True)
         return
 
     lines = []
@@ -95,17 +102,17 @@ async def admin_users(callback: CallbackQuery, session: AsyncSession):
         st = "🚫" if u.is_blocked else "✅"
         lines.append(
             f"{st} <code>{u.telegram_id}</code> @{u.username or '-'} "
-            f"| سقف {u.credit_limit} | موفق {u.successful_loans}"
+            f"| limit {u.credit_limit} | ok {u.successful_loans}"
         )
 
     builder = InlineKeyboardBuilder()
     if page > 0:
-        builder.button(text="⬅️ قبل", callback_data=f"admin:users:{page - 1}")
-    builder.button(text="بعد ➡️", callback_data=f"admin:users:{page + 1}")
-    builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin:panel", style="danger"))
+        builder.button(text="⬅️ Prev", callback_data=f"admin:users:{page - 1}")
+    builder.button(text="Next ➡️", callback_data=f"admin:users:{page + 1}")
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
 
     await callback.message.edit_text(
-        f"👥 <b>کاربران</b> (صفحه {page + 1})\n\n" + "\n".join(lines),
+        f"👥 <b>Users</b> (page {page + 1})\n\n" + "\n".join(lines),
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -125,36 +132,35 @@ async def admin_loans(callback: CallbackQuery, session: AsyncSession):
     )
     loans = result.scalars().all()
     if not loans:
-        await callback.answer("وام فعالی نیست", show_alert=True)
+        await callback.answer("No active loans", show_alert=True)
         return
 
     lines = []
     for loan in loans:
         uname = loan.user.username if loan.user else "-"
         lines.append(
-            f"#{loan.id} @{uname} | {loan.amount} {loan.currency} | {loan.installments_count} قسط"
+            f"#{loan.id} @{uname} | {loan.amount} {loan.currency} | {loan.installments_count} inst"
         )
 
     builder = InlineKeyboardBuilder()
     if page > 0:
-        builder.button(text="⬅️ قبل", callback_data=f"admin:loans:{page - 1}")
-    builder.button(text="بعد ➡️", callback_data=f"admin:loans:{page + 1}")
-    builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin:panel", style="danger"))
+        builder.button(text="⬅️ Prev", callback_data=f"admin:loans:{page - 1}")
+    builder.button(text="Next ➡️", callback_data=f"admin:loans:{page + 1}")
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
 
     await callback.message.edit_text(
-        f"📋 <b>وام‌های فعال</b>\n\n" + "\n".join(lines),
+        f"📋 <b>Active loans</b>\n\n" + "\n".join(lines),
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
     await callback.answer()
 
 
-# ---------- Block (FSM) ----------
 @router.callback_query(F.data == "admin:block", IsAdmin())
 async def admin_block_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.block_id)
     await callback.message.edit_text(
-        "🚫 <b>بلاک کاربر</b>\n\nآیدی عددی تلگرام را بفرست:",
+        "🚫 <b>Block user</b>\n\nSend Telegram numeric ID:",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -165,11 +171,11 @@ async def admin_block_id(message: Message, state: FSMContext):
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
-        await message.answer("آیدی عددی معتبر بفرست.")
+        await message.answer("Send a valid numeric ID.")
         return
     await state.update_data(block_tg_id=tg_id)
     await state.set_state(AdminFSM.block_reason)
-    await message.answer("دلیل بلاک را بنویس (یا - برای بدون دلیل):")
+    await message.answer("Reason (or - for none):")
 
 
 @router.message(AdminFSM.block_reason, IsAdmin())
@@ -185,14 +191,16 @@ async def admin_block_reason(message: Message, session: AsyncSession, state: FSM
     user.block_reason = reason
     await session.commit()
     await state.clear()
-    await message.answer(f"✅ کاربر <code>{tg_id}</code> بلاک شد.\nدلیل: {reason}", parse_mode="HTML")
+    await message.answer(
+        f"✅ User <code>{tg_id}</code> blocked.\nReason: {reason}",
+        parse_mode="HTML",
+    )
 
 
-# ---------- Unblock ----------
 @router.callback_query(F.data == "admin:unblock", IsAdmin())
 async def admin_unblock_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.unblock_id)
-    await callback.message.edit_text("✅ آیدی عددی کاربر برای آنبلاک:")
+    await callback.message.edit_text("✅ Send Telegram numeric ID to unblock:")
     await callback.answer()
 
 
@@ -201,21 +209,20 @@ async def admin_unblock_id(message: Message, session: AsyncSession, state: FSMCo
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
-        await message.answer("آیدی نامعتبر")
+        await message.answer("Invalid ID")
         return
     user = await get_or_create_user(session, tg_id)
     user.is_blocked = False
     user.block_reason = None
     await session.commit()
     await state.clear()
-    await message.answer(f"✅ کاربر <code>{tg_id}</code> آنبلاک شد.", parse_mode="HTML")
+    await message.answer(f"✅ User <code>{tg_id}</code> unblocked.", parse_mode="HTML")
 
 
-# ---------- Set limit ----------
 @router.callback_query(F.data == "admin:setlimit", IsAdmin())
 async def admin_setlimit_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AdminFSM.setlimit_id)
-    await callback.message.edit_text("📈 آیدی عددی کاربر:")
+    await callback.message.edit_text("📈 Send Telegram numeric ID:")
     await callback.answer()
 
 
@@ -224,11 +231,11 @@ async def admin_setlimit_id(message: Message, state: FSMContext):
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
-        await message.answer("آیدی نامعتبر")
+        await message.answer("Invalid ID")
         return
     await state.update_data(limit_tg_id=tg_id)
     await state.set_state(AdminFSM.setlimit_amount)
-    await message.answer("مبلغ سقف اعتبار (مثلاً 10 یا 25.5):")
+    await message.answer("Credit limit amount (e.g. 10 or 25.5):")
 
 
 @router.message(AdminFSM.setlimit_amount, IsAdmin())
@@ -238,19 +245,18 @@ async def admin_setlimit_amount(message: Message, session: AsyncSession, state: 
     try:
         amount = Decimal((message.text or "").strip().replace(",", ".")).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
-        await message.answer("مبلغ نامعتبر")
+        await message.answer("Invalid amount")
         return
     user = await get_or_create_user(session, tg_id)
     user.credit_limit = amount
     await session.commit()
     await state.clear()
     await message.answer(
-        f"✅ سقف اعتبار <code>{tg_id}</code> = <b>{amount} USDT</b>",
+        f"✅ Credit limit for <code>{tg_id}</code> = <b>{amount} USDT</b>",
         parse_mode="HTML",
     )
 
 
-# ---------- Tickets ----------
 @router.callback_query(F.data.startswith("admin:tickets:"), IsAdmin())
 async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
     page = int(callback.data.split(":")[2])
@@ -264,22 +270,22 @@ async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
     )
     tickets = result.scalars().all()
     if not tickets:
-        await callback.answer("تیکت بازی نیست", show_alert=True)
+        await callback.answer("No open tickets", show_alert=True)
         return
 
     builder = InlineKeyboardBuilder()
-    lines = ["💬 <b>تیکت‌های باز</b>\n"]
+    lines = ["💬 <b>Open tickets</b>\n"]
     for tk in tickets:
         uname = tk.user.username if tk.user else "-"
         lines.append(f"#{tk.id} @{uname}\n{tk.message[:80]}...")
         builder.row(
             InlineKeyboardButton(
-                text=f"پاسخ #{tk.id}",
+                text=f"Reply #{tk.id}",
                 callback_data=f"admin:reply:{tk.id}",
                 style="success",
             )
         )
-    builder.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="admin:panel", style="danger"))
+    builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="admin:panel", style="danger"))
 
     await callback.message.edit_text(
         "\n".join(lines),
@@ -294,7 +300,7 @@ async def admin_reply_start(callback: CallbackQuery, state: FSMContext):
     ticket_id = int(callback.data.split(":")[2])
     await state.set_state(AdminFSM.reply_ticket)
     await state.update_data(reply_ticket_id=ticket_id)
-    await callback.message.edit_text(f"پاسخ تیکت #{ticket_id} را بنویس:")
+    await callback.message.edit_text(f"Write reply for ticket #{ticket_id}:")
     await callback.answer()
 
 
@@ -309,7 +315,7 @@ async def admin_reply_send(message: Message, session: AsyncSession, state: FSMCo
     )
     ticket = result.scalar_one_or_none()
     if not ticket:
-        await message.answer("تیکت پیدا نشد")
+        await message.answer("Ticket not found")
         await state.clear()
         return
 
@@ -321,16 +327,15 @@ async def admin_reply_send(message: Message, session: AsyncSession, state: FSMCo
     try:
         await bot.send_message(
             ticket.user.telegram_id,
-            f"💬 <b>پاسخ پشتیبانی (تیکت #{ticket.id})</b>\n\n{message.text}",
+            f"💬 <b>Support reply (ticket #{ticket.id})</b>\n\n{message.text}",
             parse_mode="HTML",
         )
     except Exception:
         pass
 
-    await message.answer(f"✅ پاسخ تیکت #{ticket_id} ارسال شد.")
+    await message.answer(f"✅ Reply to ticket #{ticket_id} sent.")
 
 
-# Commands still work
 @router.message(F.text.startswith("/block"), IsAdmin())
 async def cmd_block(message: Message, session: AsyncSession):
     parts = message.text.split(maxsplit=2)
