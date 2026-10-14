@@ -38,6 +38,12 @@ class InstallmentStatus(str, PyEnum):
     PARTIAL = "partial"
 
 
+class TicketStatus(str, PyEnum):
+    OPEN = "open"
+    ANSWERED = "answered"
+    CLOSED = "closed"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -47,7 +53,6 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     language: Mapped[str] = mapped_column(String(8), default="en")
 
-    # Credit system
     credit_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5.00"))
     successful_loans: Mapped[int] = mapped_column(Integer, default=0)
     total_borrowed: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
@@ -61,9 +66,9 @@ class User(Base):
     )
 
     loans: Mapped[list["Loan"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-
-    def __repr__(self) -> str:
-        return f"<User {self.telegram_id} limit={self.credit_limit}>"
+    tickets: Mapped[list["SupportTicket"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class Loan(Base):
@@ -81,7 +86,6 @@ class Loan(Base):
         Enum(LoanStatus), default=LoanStatus.PENDING, index=True
     )
 
-    # xRocket references
     payout_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     client_payout_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
@@ -99,9 +103,6 @@ class Loan(Base):
         back_populates="loan", cascade="all, delete-orphan"
     )
 
-    def __repr__(self) -> str:
-        return f"<Loan {self.id} {self.amount} {self.status}>"
-
 
 class Installment(Base):
     __tablename__ = "installments"
@@ -109,7 +110,7 @@ class Installment(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     loan_id: Mapped[int] = mapped_column(ForeignKey("loans.id"), index=True)
 
-    number: Mapped[int] = mapped_column(Integer)  # 1, 2, 3...
+    number: Mapped[int] = mapped_column(Integer)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2))
     paid_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
 
@@ -120,7 +121,6 @@ class Installment(Base):
     due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # xRocket invoice for repayment
     invoice_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     invoice_link: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
@@ -131,5 +131,21 @@ class Installment(Base):
 
     loan: Mapped["Loan"] = relationship(back_populates="installments")
 
-    def __repr__(self) -> str:
-        return f"<Installment {self.loan_id}-{self.number} {self.amount} {self.status}>"
+
+class SupportTicket(Base):
+    __tablename__ = "support_tickets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    subject: Mapped[str] = mapped_column(String(200), default="Support")
+    message: Mapped[str] = mapped_column(Text)
+    status: Mapped[TicketStatus] = mapped_column(
+        Enum(TicketStatus), default=TicketStatus.OPEN, index=True
+    )
+    admin_reply: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped["User"] = relationship(back_populates="tickets")
