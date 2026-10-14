@@ -11,7 +11,7 @@ from loguru import logger
 
 from config import get_settings
 from database.session import init_db
-from handlers import admin, guide, invest, loan, profile, repay, start, support
+from handlers import admin, auth, guide, invest, loan, profile, repay, start, support
 from middlewares.db import DbSessionMiddleware
 
 
@@ -42,6 +42,7 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.update.middleware(DbSessionMiddleware())
 
+    dp.include_router(auth.router)
     dp.include_router(start.router)
     dp.include_router(loan.router)
     dp.include_router(repay.router)
