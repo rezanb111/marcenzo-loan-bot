@@ -1,6 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
@@ -17,7 +17,13 @@ from keyboards.inline import (
     main_menu_keyboard,
 )
 from locales import t
-from services.loan_service import create_loan, get_active_loans, get_or_create_user
+from services.loan_service import (
+    create_loan_request,
+    get_active_loans,
+    get_admin_telegram_ids,
+    get_or_create_user,
+    is_admin_user,
+)
 from services.xrocket import XRocketError
 
 router = Router(name="loan")
@@ -52,7 +58,8 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         f"Your credit limit: <b>{user.credit_limit} USDT</b>\n"
         f"Minimum amount: <b>{min_a} USDT</b>\n\n"
         f"Type any amount (e.g. 0.5 or 2.25)\n"
-        f"or use a quick button below:"
+        f"or use a quick button below:\n\n"
+        f"⚠️ After confirm, an <b>admin must approve</b> before payout."
     )
     await callback.message.edit_text(
         text,
@@ -107,20 +114,13 @@ async def choose_installments(callback: CallbackQuery, session: AsyncSession, st
     data = await state.get_data()
     amount = Decimal(str(data["amount"]))
     each = (amount / count).quantize(Decimal("0.01"))
-
     await state.update_data(installments=count)
     await state.set_state(LoanFSM.confirm)
 
     user = await get_or_create_user(session, callback.from_user.id)
-    text = t(
-        "confirm_loan",
-        user.language,
-        amount=amount,
-        count=count,
-        each=each,
-    )
+    text = t("confirm_loan", user.language, amount=amount, count=count, each=each)
     await callback.message.edit_text(
-        text,
+        text + "\n\n⏳ After confirm → waiting for <b>admin approval</b>.",
         reply_markup=confirm_loan_keyboard(user.language),
         parse_mode="HTML",
     )
@@ -128,7 +128,7 @@ async def choose_installments(callback: CallbackQuery, session: AsyncSession, st
 
 
 @router.callback_query(F.data == "loan:confirm", LoanFSM.confirm)
-async def confirm_and_issue(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot):
     data = await state.get_data()
     amount = Decimal(str(data["amount"]))
     count = int(data["installments"])
@@ -141,13 +141,48 @@ async def confirm_and_issue(callback: CallbackQuery, session: AsyncSession, stat
     )
 
     try:
-        await create_loan(session, user, amount, count)
+        loan = await create_loan_request(session, user, amount, count)
         await session.commit()
         await state.clear()
 
-        text = t("loan_issued", user.language, amount=amount)
-        await callback.message.edit_text(text, parse_mode="HTML")
-        is_admin = (callback.from_user.username or "").lower() in settings.admin_list
+        await callback.message.edit_text(
+            f"⏳ <b>Loan request #{loan.id} submitted</b>\n\n"
+            f"Amount: <b>{amount} USDT</b>\n"
+            f"Installments: <b>{count}</b>\n\n"
+            f"Waiting for admin approval. You will be notified.",
+            parse_mode="HTML",
+        )
+
+        # Notify admins
+        admin_ids = await get_admin_telegram_ids(session)
+        kb = InlineKeyboardBuilder()
+        kb.row(
+            InlineKeyboardButton(
+                text="✅ Approve",
+                callback_data=f"admin:loan_approve:{loan.id}",
+            ),
+            InlineKeyboardButton(
+                text="❌ Reject",
+                callback_data=f"admin:loan_reject:{loan.id}",
+            ),
+        )
+        note = (
+            f"🔔 <b>New loan request #{loan.id}</b>\n\n"
+            f"User: @{user.username or '-'} (<code>{user.telegram_id}</code>)\n"
+            f"Amount: <b>{amount} USDT</b>\n"
+            f"Installments: {count} × {loan.installment_amount}\n"
+            f"Credit limit: {user.credit_limit}\n"
+            f"Successful loans: {user.successful_loans}"
+        )
+        for aid in admin_ids:
+            try:
+                await bot.send_message(
+                    aid, note, reply_markup=kb.as_markup(), parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.warning("Could not notify admin {}: {}", aid, e)
+
+        is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
         await callback.message.answer(
             t("main_menu", user.language, limit=user.credit_limit, success=user.successful_loans),
             reply_markup=main_menu_keyboard(user.language, is_admin=is_admin),
@@ -155,24 +190,8 @@ async def confirm_and_issue(callback: CallbackQuery, session: AsyncSession, stat
         )
     except ValueError as e:
         await callback.answer(str(e)[:180], show_alert=True)
-    except XRocketError as e:
-        logger.error("xRocket payout failed: {} | payload={}", e, getattr(e, "payload", None))
-        detail = str(e)[:150]
-        await callback.answer(f"xRocket: {detail}", show_alert=True)
-        # Also send full detail in chat for admin debugging
-        try:
-            await callback.message.answer(
-                f"⚠️ <b>Payout failed</b>\n<code>{detail}</code>\n\n"
-                "Common causes:\n"
-                "• App balance is empty — top up the xRocket Pay app\n"
-                "• Wrong API token / API version (set to Current in @xRocket)\n"
-                "• Recipient must open @xRocket at least once",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
     except Exception as e:
-        logger.exception("Unexpected error issuing loan")
+        logger.exception("loan confirm error")
         await callback.answer(f"Error: {str(e)[:120]}", show_alert=True)
 
     await callback.answer()
@@ -192,26 +211,23 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
         return
 
     builder = InlineKeyboardBuilder()
-    lines = ["📋 <b>Active loans</b>\n"]
+    lines = ["📋 <b>Your loans</b>\n"]
     for loan in loans:
         paid = sum(1 for i in loan.installments if i.status.value == "paid")
+        st = loan.status.value
         lines.append(
-            f"#{loan.id} — {loan.amount} {loan.currency} ({paid}/{loan.installments_count})"
+            f"#{loan.id} — {loan.amount} {loan.currency} [{st}] ({paid}/{loan.installments_count})"
         )
-        builder.row(
-            InlineKeyboardButton(
-                text=f"Loan #{loan.id} — Pay",
-                callback_data=f"repay:loan:{loan.id}",
-                style="success",
+        if st == "active":
+            builder.row(
+                InlineKeyboardButton(
+                    text=f"Loan #{loan.id} — Pay",
+                    callback_data=f"repay:loan:{loan.id}",
+                )
             )
-        )
 
     builder.row(
-        InlineKeyboardButton(
-            text=t("back", user.language),
-            callback_data="menu:main",
-            style="danger",
-        )
+        InlineKeyboardButton(text=t("back", user.language), callback_data="menu:main")
     )
 
     await callback.message.edit_text(
