@@ -9,9 +9,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from keyboards.inline import language_keyboard, main_menu_keyboard
-from locales import t
+from locales import menu_kwargs, t
 from services.loan_service import get_or_create_user, is_admin_user
 from services.security import hash_password, make_captcha, verify_password
+from utils.media import send_section
 
 router = Router(name="auth")
 
@@ -49,20 +50,9 @@ async def show_main(event, session: AsyncSession, user) -> None:
         getattr(event.from_user, "username", None),
         getattr(event.from_user, "id", None),
     )
-    text = t(
-        "main_menu",
-        user.language or "en",
-        limit=user.credit_limit,
-        success=user.successful_loans,
-    )
+    text = t("main_menu", user.language or "en", **menu_kwargs(user))
     kb = main_menu_keyboard(user.language or "en", is_admin=is_admin)
-    if isinstance(event, CallbackQuery):
-        try:
-            await event.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await event.message.answer(text, reply_markup=kb, parse_mode="HTML")
-    else:
-        await event.answer(text, reply_markup=kb, parse_mode="HTML")
+    await send_section(event, text, section="main", reply_markup=kb)
 
 
 @router.message(CommandStart())
@@ -76,8 +66,7 @@ async def cmd_start(message: Message, session: AsyncSession, state: FSMContext):
     )
     await session.commit()
     await message.answer(
-        "🛡️ <b>Marcenzo Security Gate</b>\n\n"
-        "Complete the captcha to enter the bot.",
+        "🛡️ <b>Marcenzo Security Gate</b>\n\nComplete the captcha to enter.",
         parse_mode="HTML",
     )
     await send_captcha(message, state)
@@ -111,15 +100,13 @@ async def captcha_answer(callback: CallbackQuery, session: AsyncSession, state: 
         await state.update_data(captcha_fails=fails)
         if fails >= 5:
             await state.clear()
-            await callback.message.edit_text(
-                "❌ Too many failed attempts. Send /start to try again."
-            )
+            await callback.message.edit_text("❌ Too many fails. Send /start again.")
             await callback.answer("Locked", show_alert=True)
             return
         ch = make_captcha()
         await state.update_data(captcha_answer=ch.answer, captcha_options=ch.options)
         await callback.message.edit_text(
-            f"❌ Wrong. Try again ({fails}/5)\n\n" + ch.question,
+            f"❌ Wrong ({fails}/5)\n\n" + ch.question,
             reply_markup=captcha_keyboard(ch.options),
             parse_mode="HTML",
         )
@@ -136,9 +123,7 @@ async def captcha_answer(callback: CallbackQuery, session: AsyncSession, state: 
     if user.has_password:
         await state.set_state(AuthFSM.password_unlock)
         await callback.message.edit_text(
-            "🔑 <b>Password required</b>\n\n"
-            "You enabled an optional password. Send it to unlock.\n"
-            "Forgot? Contact support.",
+            "🔑 <b>Password required</b>\n\nSend your password to unlock.",
             parse_mode="HTML",
         )
         await callback.answer("Captcha OK")
@@ -159,18 +144,15 @@ async def password_unlock(message: Message, session: AsyncSession, state: FSMCon
         await message.delete()
     except Exception:
         pass
-
     if not user.has_password:
         await state.clear()
         await show_main(message, session, user)
         return
-
     if verify_password(pwd, user.password_hash, user.password_salt):
         await state.clear()
         await message.answer("✅ Unlocked.")
         await show_main(message, session, user)
         return
-
     await message.answer("❌ Wrong password. Try again or /start.")
 
 
@@ -189,10 +171,8 @@ async def security_menu(callback: CallbackQuery, session: AsyncSession, state: F
         )
     builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="profile"))
     await callback.message.edit_text(
-        f"🔐 <b>Security</b>\n\n"
-        f"Optional password: <b>{status}</b>\n\n"
-        f"If set, after captcha on /start you must enter it.\n"
-        f"Completely optional — skip if you do not want it.",
+        f"🔐 <b>Security</b>\n\nOptional password: <b>{status}</b>\n\n"
+        f"If set, required after captcha on /start. Fully optional.",
         reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
@@ -202,9 +182,7 @@ async def security_menu(callback: CallbackQuery, session: AsyncSession, state: F
 @router.callback_query(F.data == "security:set")
 async def security_set(callback: CallbackQuery, state: FSMContext):
     await state.set_state(AuthFSM.set_password)
-    await callback.message.edit_text(
-        "🔑 Send a new password (4–32 characters).\nOr /cancel"
-    )
+    await callback.message.edit_text("🔑 New password (4–32 chars). Or /cancel")
     await callback.answer()
 
 
@@ -224,7 +202,7 @@ async def security_set1(message: Message, state: FSMContext):
         return
     await state.update_data(new_pwd=pwd)
     await state.set_state(AuthFSM.set_password2)
-    await message.answer("Confirm password (send again):")
+    await message.answer("Confirm password:")
 
 
 @router.message(AuthFSM.set_password2)
@@ -237,7 +215,7 @@ async def security_set2(message: Message, session: AsyncSession, state: FSMConte
         pass
     if pwd2 != data.get("new_pwd"):
         await state.set_state(AuthFSM.set_password)
-        await message.answer("Mismatch. Send a new password:")
+        await message.answer("Mismatch. Send new password:")
         return
     user = await get_or_create_user(session, message.from_user.id)
     digest, salt = hash_password(pwd2)
