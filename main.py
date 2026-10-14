@@ -42,7 +42,9 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage())
     dp.update.middleware(DbSessionMiddleware())
 
+    # Order: auth first, admin early so panel callbacks never hang
     dp.include_router(auth.router)
+    dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(loan.router)
     dp.include_router(repay.router)
@@ -50,9 +52,8 @@ async def main() -> None:
     dp.include_router(guide.router)
     dp.include_router(profile.router)
     dp.include_router(support.router)
-    dp.include_router(admin.router)
 
-    logger.info("🚀 Marcenzo Loan Bot started")
+    logger.info("🚀 Marcenzo Loan Bot started (@{})", getattr(settings, "bot_username", "See30bot"))
     await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
