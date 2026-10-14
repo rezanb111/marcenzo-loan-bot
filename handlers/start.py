@@ -4,8 +4,9 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from keyboards.inline import main_menu_keyboard
-from locales import t
+from locales import menu_kwargs, t
 from services.loan_service import get_or_create_user, is_admin_user
+from utils.media import send_section
 
 router = Router(name="start")
 
@@ -24,14 +25,8 @@ async def set_language(callback: CallbackQuery, session: AsyncSession, state: FS
     await session.commit()
 
     await callback.message.edit_text(t("language_set", lang))
-
     is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
-    text = t(
-        "main_menu",
-        lang,
-        limit=user.credit_limit,
-        success=user.successful_loans,
-    )
+    text = t("main_menu", lang, **menu_kwargs(user))
     await callback.message.answer(
         text,
         reply_markup=main_menu_keyboard(lang, is_admin=is_admin),
@@ -50,22 +45,11 @@ async def back_to_main(callback: CallbackQuery, session: AsyncSession, state: FS
         full_name=callback.from_user.full_name,
     )
     is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
-    text = t(
-        "main_menu",
-        user.language or "en",
-        limit=user.credit_limit,
-        success=user.successful_loans,
+    text = t("main_menu", user.language or "en", **menu_kwargs(user))
+    await send_section(
+        callback,
+        text,
+        section="main",
+        reply_markup=main_menu_keyboard(user.language or "en", is_admin=is_admin),
     )
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=main_menu_keyboard(user.language or "en", is_admin=is_admin),
-            parse_mode="HTML",
-        )
-    except Exception:
-        await callback.message.answer(
-            text,
-            reply_markup=main_menu_keyboard(user.language or "en", is_admin=is_admin),
-            parse_mode="HTML",
-        )
     await callback.answer()
