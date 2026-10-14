@@ -24,7 +24,6 @@ from services.loan_service import (
     get_or_create_user,
     is_admin_user,
 )
-from services.xrocket import XRocketError
 
 router = Router(name="loan")
 settings = get_settings()
@@ -52,14 +51,11 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         return
 
     await state.set_state(LoanFSM.amount)
-    min_a = settings.min_loan_amount
-    text = (
-        f"💰 <b>Request a loan</b>\n\n"
-        f"Your credit limit: <b>{user.credit_limit} USDT</b>\n"
-        f"Minimum amount: <b>{min_a} USDT</b>\n\n"
-        f"Type any amount (e.g. 0.5 or 2.25)\n"
-        f"or use a quick button below:\n\n"
-        f"⚠️ After confirm, an <b>admin must approve</b> before payout."
+    text = t(
+        "loan_guide",
+        user.language,
+        limit=user.credit_limit,
+        min_a=settings.min_loan_amount,
     )
     await callback.message.edit_text(
         text,
@@ -113,12 +109,24 @@ async def choose_installments(callback: CallbackQuery, session: AsyncSession, st
     count = int(callback.data.split(":")[2])
     data = await state.get_data()
     amount = Decimal(str(data["amount"]))
-    each = (amount / count).quantize(Decimal("0.01"))
+    interest = (amount * Decimal(str(settings.loan_interest_percent)) / Decimal("100")).quantize(
+        Decimal("0.01")
+    )
+    total = amount + interest
+    each = (total / count).quantize(Decimal("0.01"))
     await state.update_data(installments=count)
     await state.set_state(LoanFSM.confirm)
 
     user = await get_or_create_user(session, callback.from_user.id)
-    text = t("confirm_loan", user.language, amount=amount, count=count, each=each)
+    text = t(
+        "confirm_loan",
+        user.language,
+        amount=amount,
+        interest=interest,
+        total=total,
+        count=count,
+        each=each,
+    )
     await callback.message.edit_text(
         text + "\n\n⏳ After confirm → waiting for <b>admin approval</b>.",
         reply_markup=confirm_loan_keyboard(user.language),
@@ -147,40 +155,32 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
 
         await callback.message.edit_text(
             f"⏳ <b>Loan request #{loan.id} submitted</b>\n\n"
-            f"Amount: <b>{amount} USDT</b>\n"
-            f"Installments: <b>{count}</b>\n\n"
-            f"Waiting for admin approval. You will be notified.",
+            f"Principal: <b>{amount} USDT</b>\n"
+            f"Interest 1%: <b>{loan.interest_amount} USDT</b>\n"
+            f"Total repay: <b>{loan.total_repay} USDT</b>\n"
+            f"Installments: <b>{count}</b> × {loan.installment_amount}\n\n"
+            f"Waiting for admin approval.",
             parse_mode="HTML",
         )
 
-        # Notify admins
         admin_ids = await get_admin_telegram_ids(session)
         kb = InlineKeyboardBuilder()
         kb.row(
-            InlineKeyboardButton(
-                text="✅ Approve",
-                callback_data=f"admin:loan_approve:{loan.id}",
-            ),
-            InlineKeyboardButton(
-                text="❌ Reject",
-                callback_data=f"admin:loan_reject:{loan.id}",
-            ),
+            InlineKeyboardButton(text="✅ Approve", callback_data=f"admin:loan_approve:{loan.id}"),
+            InlineKeyboardButton(text="❌ Reject", callback_data=f"admin:loan_reject:{loan.id}"),
         )
         note = (
             f"🔔 <b>New loan request #{loan.id}</b>\n\n"
             f"User: @{user.username or '-'} (<code>{user.telegram_id}</code>)\n"
-            f"Amount: <b>{amount} USDT</b>\n"
-            f"Installments: {count} × {loan.installment_amount}\n"
-            f"Credit limit: {user.credit_limit}\n"
-            f"Successful loans: {user.successful_loans}"
+            f"Principal: <b>{amount} USDT</b> + 1% interest\n"
+            f"Total repay: {loan.total_repay} · {count} inst\n"
+            f"Limit: {user.credit_limit} · Success: {user.successful_loans}"
         )
         for aid in admin_ids:
             try:
-                await bot.send_message(
-                    aid, note, reply_markup=kb.as_markup(), parse_mode="HTML"
-                )
+                await bot.send_message(aid, note, reply_markup=kb.as_markup(), parse_mode="HTML")
             except Exception as e:
-                logger.warning("Could not notify admin {}: {}", aid, e)
+                logger.warning("notify admin {}: {}", aid, e)
 
         is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
         await callback.message.answer(
@@ -204,19 +204,24 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
 
     if not loans:
         await callback.message.edit_text(
-            t("no_active_loans", user.language),
+            "⚡ <b>My Loans</b>\n\n" + t("no_active_loans", user.language),
             reply_markup=back_keyboard(user.language),
+            parse_mode="HTML",
         )
         await callback.answer()
         return
 
     builder = InlineKeyboardBuilder()
-    lines = ["📋 <b>Your loans</b>\n"]
+    lines = [
+        "⚡ <b>My Loans</b>\n\n"
+        "Pending = waiting admin. Active = repay installments (principal + 1% interest).\n"
+    ]
     for loan in loans:
         paid = sum(1 for i in loan.installments if i.status.value == "paid")
         st = loan.status.value
         lines.append(
-            f"#{loan.id} — {loan.amount} {loan.currency} [{st}] ({paid}/{loan.installments_count})"
+            f"#{loan.id} — {loan.amount} (+{loan.interest_amount or 0} int) [{st}] "
+            f"({paid}/{loan.installments_count})"
         )
         if st == "active":
             builder.row(
@@ -226,13 +231,8 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
                 )
             )
 
-    builder.row(
-        InlineKeyboardButton(text=t("back", user.language), callback_data="menu:main")
-    )
-
+    builder.row(InlineKeyboardButton(text=t("back", user.language), callback_data="menu:main"))
     await callback.message.edit_text(
-        "\n".join(lines),
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML",
+        "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML"
     )
     await callback.answer()
