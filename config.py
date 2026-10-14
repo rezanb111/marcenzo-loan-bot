@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     default_language: str = "en"
     support_username: str = "marcenzo"
+    bot_username: str = "See30bot"
 
     @property
     def admin_list(self) -> List[str]:
