@@ -68,6 +68,10 @@ class User(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     block_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Optional password (user chooses to set or not)
+    password_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    password_salt: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -80,6 +84,10 @@ class User(Base):
     investments: Mapped[list["Investment"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+    @property
+    def has_password(self) -> bool:
+        return bool(self.password_hash and self.password_salt)
 
 
 class Loan(Base):
