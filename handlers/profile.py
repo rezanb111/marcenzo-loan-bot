@@ -4,6 +4,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.loan_service import get_or_create_user
+from utils.media import send_section
 
 router = Router(name="profile")
 
@@ -17,6 +18,8 @@ async def show_profile(callback: CallbackQuery, session: AsyncSession):
         full_name=callback.from_user.full_name,
     )
 
+    success = int(user.successful_loans or 0)
+    to_next = 3 - (success % 3) if success % 3 else 3
     pwd = "ON ✅" if user.has_password else "OFF (optional)"
     text = (
         f"⭐ <b>Profile</b>\n\n"
@@ -24,6 +27,8 @@ async def show_profile(callback: CallbackQuery, session: AsyncSession):
         f"Username: @{user.username or '-'}\n"
         f"Language: {user.language}\n"
         f"Password: <b>{pwd}</b>\n\n"
+        f"🏅 Level: <b>{user.level}</b> — {user.level_name}\n"
+        f"📊 Next level after <b>{to_next}</b> more full repayments\n\n"
         f"💳 Credit limit: <b>{user.credit_limit} USDT</b>\n"
         f"✅ Successful loans: <b>{user.successful_loans}</b>\n"
         f"📤 Total borrowed: <b>{user.total_borrowed} USDT</b>\n"
@@ -38,9 +43,7 @@ async def show_profile(callback: CallbackQuery, session: AsyncSession):
     builder.row(InlineKeyboardButton(text="🔐 Security / Password", callback_data="security:menu"))
     builder.row(InlineKeyboardButton(text="🔙 Back", callback_data="menu:main"))
 
-    await callback.message.edit_text(
-        text,
-        reply_markup=builder.as_markup(),
-        parse_mode="HTML",
+    await send_section(
+        callback, text, section="profile", reply_markup=builder.as_markup()
     )
     await callback.answer()
