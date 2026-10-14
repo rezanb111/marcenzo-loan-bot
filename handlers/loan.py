@@ -3,7 +3,8 @@ from decimal import Decimal
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,7 +37,10 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         full_name=callback.from_user.full_name,
     )
     if user.is_blocked:
-        await callback.answer(t("blocked", user.language, reason=user.block_reason or "-"), show_alert=True)
+        await callback.answer(
+            t("blocked", user.language, reason=user.block_reason or "-"),
+            show_alert=True,
+        )
         return
 
     await state.set_state(LoanFSM.amount)
@@ -50,16 +54,15 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
 
 
 @router.callback_query(F.data.startswith("loan:amount:"), LoanFSM.amount)
-async def choose_amount(callback: CallbackQuery, state: FSMContext):
+async def choose_amount(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     amount = float(callback.data.split(":")[2])
     await state.update_data(amount=amount)
     await state.set_state(LoanFSM.installments)
 
-    user = callback.from_user
-    # language will be loaded later, use en fallback for now in keyboard
+    user = await get_or_create_user(session, callback.from_user.id)
     await callback.message.edit_text(
-        t("choose_installments", "en"),
-        reply_markup=installments_keyboard("en"),
+        t("choose_installments", user.language),
+        reply_markup=installments_keyboard(user.language),
     )
     await callback.answer()
 
@@ -140,18 +143,32 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
         await callback.answer()
         return
 
-    lines = []
+    builder = InlineKeyboardBuilder()
+    lines = ["📋 <b>Active loans</b>\n"]
     for loan in loans:
         paid = sum(1 for i in loan.installments if i.status.value == "paid")
         lines.append(
-            f"#{loan.id} — {loan.amount} {loan.currency} "
-            f"({paid}/{loan.installments_count} paid)"
+            f"#{loan.id} — {loan.amount} {loan.currency} ({paid}/{loan.installments_count})"
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text=f"Loan #{loan.id} — Pay",
+                callback_data=f"repay:loan:{loan.id}",
+                style="success",
+            )
         )
 
-    text = "📋 <b>Active loans</b>\n\n" + "\n".join(lines)
+    builder.row(
+        InlineKeyboardButton(
+            text=t("back", user.language),
+            callback_data="menu:main",
+            style="danger",
+        )
+    )
+
     await callback.message.edit_text(
-        text,
-        reply_markup=back_keyboard(user.language),
+        "\n".join(lines),
+        reply_markup=builder.as_markup(),
         parse_mode="HTML",
     )
     await callback.answer()
