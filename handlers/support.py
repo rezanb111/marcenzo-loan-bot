@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database.models import SupportTicket, TicketStatus
-from keyboards.inline import back_keyboard, EMOJI
+from keyboards.inline import EMOJI, back_keyboard
 from locales import t
 from services.loan_service import get_or_create_user
 
@@ -27,7 +27,7 @@ async def support_menu(callback: CallbackQuery, session: AsyncSession, state: FS
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(
-            text="📝 ارسال تیکت جدید",
+            text="📝 New ticket",
             callback_data="support:new",
             style="success",
             icon_custom_emoji_id=EMOJI.get("heart"),
@@ -35,7 +35,7 @@ async def support_menu(callback: CallbackQuery, session: AsyncSession, state: FS
     )
     builder.row(
         InlineKeyboardButton(
-            text="📩 تماس مستقیم ادمین",
+            text="📩 Message admin directly",
             url=f"https://t.me/{settings.support_username}",
             style="primary",
         )
@@ -50,10 +50,10 @@ async def support_menu(callback: CallbackQuery, session: AsyncSession, state: FS
     )
 
     text = (
-        "🆘 <b>پشتیبانی Marcenzo</b>\n\n"
-        "می‌تونی تیکت بسازی تا ادمین جواب بده،\n"
-        "یا مستقیم به ادمین پیام بدی.\n\n"
-        f"ادمین: @{settings.support_username}"
+        "🆘 <b>Marcenzo Support</b>\n\n"
+        "Open a ticket and an admin will reply,\n"
+        "or message the admin directly.\n\n"
+        f"Admin: @{settings.support_username}"
     )
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     await callback.answer()
@@ -63,13 +63,13 @@ async def support_menu(callback: CallbackQuery, session: AsyncSession, state: FS
 async def support_new(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SupportFSM.message)
     await callback.message.edit_text(
-        "📝 مشکلت یا سوالت را کامل بنویس:\n\n(بعد از ارسال، تیکت برای ادمین می‌رود)"
+        "📝 Describe your issue or question:\n\n(After you send it, a ticket is created for admins.)"
     )
     await callback.answer()
 
 
 @router.message(SupportFSM.message)
-async def support_save(message: Message, session: AsyncSession, state: FSMContext, bot):
+async def support_save(message: Message, session: AsyncSession, state: FSMContext):
     user = await get_or_create_user(
         session,
         telegram_id=message.from_user.id,
@@ -78,7 +78,7 @@ async def support_save(message: Message, session: AsyncSession, state: FSMContex
     )
     text = (message.text or "").strip()
     if len(text) < 5:
-        await message.answer("پیام خیلی کوتاه است. بیشتر توضیح بده.")
+        await message.answer("Message is too short. Please add more details.")
         return
 
     ticket = SupportTicket(
@@ -92,9 +92,6 @@ async def support_save(message: Message, session: AsyncSession, state: FSMContex
     await state.clear()
 
     await message.answer(
-        f"✅ تیکت #{ticket.id} ثبت شد.\nبه زودی پاسخ می‌دهیم.",
+        f"✅ Ticket #{ticket.id} created.\nWe will reply soon.",
         reply_markup=back_keyboard(user.language),
     )
-
-    # Notify admins (best-effort via username not possible; use known admin chat if they messaged bot)
-    # Admins will see tickets in admin panel.
