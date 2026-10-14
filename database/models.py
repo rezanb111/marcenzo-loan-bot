@@ -50,6 +50,23 @@ class InvestmentStatus(str, PyEnum):
     WITHDRAWN = "withdrawn"
 
 
+LEVEL_TITLES = {
+    1: "Bronze",
+    2: "Silver",
+    3: "Gold",
+    4: "Platinum",
+    5: "Diamond",
+    6: "Master",
+    7: "Legend",
+}
+
+
+def level_title(level: int) -> str:
+    if level >= 7:
+        return LEVEL_TITLES[7]
+    return LEVEL_TITLES.get(level, f"Level {level}")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -59,6 +76,7 @@ class User(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     language: Mapped[str] = mapped_column(String(8), default="en")
 
+    level: Mapped[int] = mapped_column(Integer, default=1)
     credit_limit: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("5.00"))
     successful_loans: Mapped[int] = mapped_column(Integer, default=0)
     total_borrowed: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0.00"))
@@ -68,7 +86,6 @@ class User(Base):
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
     block_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
-    # Optional password (user chooses to set or not)
     password_hash: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     password_salt: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
@@ -88,6 +105,10 @@ class User(Base):
     @property
     def has_password(self) -> bool:
         return bool(self.password_hash and self.password_salt)
+
+    @property
+    def level_name(self) -> str:
+        return level_title(int(self.level or 1))
 
 
 class Loan(Base):
