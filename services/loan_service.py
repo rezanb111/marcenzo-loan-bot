@@ -1,4 +1,4 @@
-"""Core loan & credit logic — admin approval + 1% interest to fund investors."""
+"""Core loan & credit logic — admin approval, 1% interest, levels."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from database.models import (
     Loan,
     LoanStatus,
     User,
+    level_title,
 )
 from services.xrocket import XRocketClient, get_xrocket
 
@@ -40,6 +41,8 @@ async def get_or_create_user(
             user.username = username
         if full_name and user.full_name != full_name:
             user.full_name = full_name
+        if getattr(user, "level", None) is None:
+            user.level = 1
         return user
 
     user = User(
@@ -47,6 +50,7 @@ async def get_or_create_user(
         username=username,
         full_name=full_name,
         language=language,
+        level=1,
         credit_limit=Decimal(str(settings.initial_credit_limit)),
     )
     session.add(user)
@@ -77,6 +81,21 @@ def calculate_next_limit(current: Decimal, successful: int) -> Decimal:
         new_limit = current * Decimal(str(settings.credit_multiplier))
         return min(new_limit, Decimal(str(settings.max_loan_amount)))
     return current
+
+
+def apply_level_up(user: User) -> bool:
+    """Every 3 successful loans → level +1. Returns True if leveled up."""
+    n = settings.successful_loans_for_upgrade  # 3
+    if user.successful_loans > 0 and user.successful_loans % n == 0:
+        user.level = int(user.level or 1) + 1
+        logger.info(
+            "User {} leveled up to {} ({})",
+            user.telegram_id,
+            user.level,
+            level_title(user.level),
+        )
+        return True
+    return False
 
 
 async def create_loan_request(
@@ -181,7 +200,6 @@ async def reject_loan(session: AsyncSession, loan: Loan) -> Loan:
 
 
 async def distribute_interest(session: AsyncSession, interest: Decimal) -> None:
-    """Split interest among active investors proportional to their stake."""
     if interest <= 0:
         return
     result = await session.execute(
@@ -205,7 +223,8 @@ async def mark_installment_paid(
     session: AsyncSession,
     installment: Installment,
     paid_amount: Decimal | None = None,
-) -> None:
+) -> bool:
+    """Returns True if user leveled up on full loan completion."""
     paid = paid_amount or installment.amount
     installment.paid_amount = paid
     installment.status = InstallmentStatus.PAID
@@ -213,15 +232,17 @@ async def mark_installment_paid(
     loan = installment.loan
     user = loan.user
     user.total_repaid += paid
+    leveled = False
 
     if all(i.status == InstallmentStatus.PAID for i in loan.installments):
         loan.status = LoanStatus.COMPLETED
         loan.completed_at = datetime.now(timezone.utc)
         user.successful_loans += 1
         user.credit_limit = calculate_next_limit(user.credit_limit, user.successful_loans)
-        # Full interest goes to investors when loan completes
+        leveled = apply_level_up(user)
         await distribute_interest(session, loan.interest_amount or Decimal("0"))
     await session.flush()
+    return leveled
 
 
 async def get_active_loans(session: AsyncSession, user_id: int) -> list[Loan]:
