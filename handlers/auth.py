@@ -1,4 +1,4 @@
-"""Entry captcha + optional password lock."""
+"""Entry captcha → Terms → language → menu. Optional password."""
 
 from aiogram import F, Router
 from aiogram.filters import CommandStart
@@ -8,7 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from keyboards.inline import language_keyboard, main_menu_keyboard
+from keyboards.inline import language_keyboard, main_menu_keyboard, terms_keyboard
 from locales import menu_kwargs, t
 from services.loan_service import get_or_create_user, is_admin_user
 from services.security import hash_password, make_captcha, verify_password
@@ -16,9 +16,22 @@ from utils.media import send_section
 
 router = Router(name="auth")
 
+TERMS_TEXT = (
+    "📜 <b>Terms of Use — Marcenzo Loan Bot</b>\n\n"
+    "1. This is a peer P2P tooling bot with <b>admin-approved</b> loans via xRocket Pay.\n"
+    "2. Loans start from <b>0.10 USDT</b>. You repay principal + <b>1% interest</b>.\n"
+    "3. Interest is shared with the investment pool proportionally.\n"
+    "4. Every <b>3 successful full repayments</b> may raise your level and credit limit.\n"
+    "5. Late or missed repayments may lead to limits, blocks, or recovery actions by admins.\n"
+    "6. You must have an active <b>@xRocket</b> wallet linked to your Telegram.\n"
+    "7. Not financial advice. Use at your own risk. Admins: @marcenzo · @shibainuo\n\n"
+    "By tapping <b>I Agree</b> you accept these rules."
+)
+
 
 class AuthFSM(StatesGroup):
     captcha = State()
+    terms = State()
     password_unlock = State()
     set_password = State()
     set_password2 = State()
@@ -66,7 +79,7 @@ async def cmd_start(message: Message, session: AsyncSession, state: FSMContext):
     )
     await session.commit()
     await message.answer(
-        "🛡️ <b>Marcenzo Security Gate</b>\n\nComplete the captcha to enter.",
+        "🛡️ <b>Marcenzo Security Gate</b>\n\nComplete the captcha to continue.",
         parse_mode="HTML",
     )
     await send_captcha(message, state)
@@ -129,11 +142,37 @@ async def captcha_answer(callback: CallbackQuery, session: AsyncSession, state: 
         await callback.answer("Captcha OK")
         return
 
+    # Captcha OK → Terms of Use
+    await state.set_state(AuthFSM.terms)
+    await callback.message.edit_text(
+        TERMS_TEXT,
+        reply_markup=terms_keyboard(user.language or "en"),
+        parse_mode="HTML",
+    )
+    await callback.answer("✅ Captcha passed")
+
+
+@router.callback_query(F.data == "terms:accept", AuthFSM.terms)
+async def terms_accept(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    user = await get_or_create_user(
+        session,
+        telegram_id=callback.from_user.id,
+        username=callback.from_user.username,
+        full_name=callback.from_user.full_name,
+    )
     await state.clear()
-    await callback.message.edit_text("✅ Captcha passed.")
-    await show_main(callback, session, user)
-    await callback.message.answer("🌐 Language:", reply_markup=language_keyboard())
+    await callback.message.edit_text("✅ Terms accepted.")
+    await callback.message.answer("🌐 Choose language:", reply_markup=language_keyboard())
     await callback.answer()
+
+
+@router.callback_query(F.data == "terms:decline", AuthFSM.terms)
+async def terms_decline(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text(
+        "❌ You must accept the Terms to use this bot.\n\nSend /start when ready."
+    )
+    await callback.answer("Declined", show_alert=True)
 
 
 @router.message(AuthFSM.password_unlock)
@@ -145,13 +184,21 @@ async def password_unlock(message: Message, session: AsyncSession, state: FSMCon
     except Exception:
         pass
     if not user.has_password:
-        await state.clear()
-        await show_main(message, session, user)
+        await state.set_state(AuthFSM.terms)
+        await message.answer(
+            TERMS_TEXT,
+            reply_markup=terms_keyboard(user.language or "en"),
+            parse_mode="HTML",
+        )
         return
     if verify_password(pwd, user.password_hash, user.password_salt):
-        await state.clear()
+        await state.set_state(AuthFSM.terms)
         await message.answer("✅ Unlocked.")
-        await show_main(message, session, user)
+        await message.answer(
+            TERMS_TEXT,
+            reply_markup=terms_keyboard(user.language or "en"),
+            parse_mode="HTML",
+        )
         return
     await message.answer("❌ Wrong password. Try again or /start.")
 
