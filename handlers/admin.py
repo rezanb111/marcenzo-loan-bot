@@ -1,7 +1,6 @@
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router
-from aiogram.filters import BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
@@ -26,10 +25,23 @@ router = Router(name="admin")
 settings = get_settings()
 
 
-class IsAdmin(BaseFilter):
-    async def __call__(self, event: Message | CallbackQuery) -> bool:
-        u = event.from_user
-        return is_admin_user(u.username if u else None, u.id if u else None)
+def _is_admin(event) -> bool:
+    u = event.from_user
+    if not u:
+        return False
+    return is_admin_user(u.username, u.id)
+
+
+async def _deny(callback: CallbackQuery) -> bool:
+    """Return True if denied (and answered)."""
+    if _is_admin(callback):
+        return False
+    await callback.answer(
+        "⛔ Access denied. Admins: @marcenzo / @shibainuo only. "
+        "Set ADMIN_IDS in .env if your username is hidden.",
+        show_alert=True,
+    )
+    return True
 
 
 class AdminFSM(StatesGroup):
@@ -41,8 +53,10 @@ class AdminFSM(StatesGroup):
     reply_ticket = State()
 
 
-@router.callback_query(F.data == "admin:panel", IsAdmin())
+@router.callback_query(F.data == "admin:panel")
 async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
+    if await _deny(callback):
+        return
     await state.clear()
     total_users = await session.scalar(select(func.count(User.id))) or 0
     total_loans = await session.scalar(select(func.count(Loan.id))) or 0
@@ -69,7 +83,8 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
         f"⏳ Pending approval: <b>{pending_loans}</b>\n"
         f"🟢 Active loans: <b>{active_loans}</b>\n"
         f"💬 Open tickets: <b>{open_tickets}</b>\n"
-        f"💰 Total volume: <b>{total_volume} USDT</b>\n"
+        f"💰 Total volume: <b>{total_volume} USDT</b>\n\n"
+        f"You: @{callback.from_user.username or '-'} / <code>{callback.from_user.id}</code>"
     )
 
     builder = InlineKeyboardBuilder()
@@ -94,12 +109,17 @@ async def admin_panel(callback: CallbackQuery, session: AsyncSession, state: FSM
         InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main"),
     )
 
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    try:
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception:
+        await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin:pending", IsAdmin())
+@router.callback_query(F.data == "admin:pending")
 async def admin_pending(callback: CallbackQuery, session: AsyncSession):
+    if await _deny(callback):
+        return
     loans = await get_pending_loans(session)
     if not loans:
         await callback.answer("No pending loans", show_alert=True)
@@ -131,8 +151,10 @@ async def admin_pending(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin:loan_approve:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:loan_approve:"))
 async def admin_loan_approve(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+    if await _deny(callback):
+        return
     loan_id = int(callback.data.split(":")[2])
     result = await session.execute(
         select(Loan).where(Loan.id == loan_id).options(selectinload(Loan.user))
@@ -161,9 +183,10 @@ async def admin_loan_approve(callback: CallbackQuery, session: AsyncSession, bot
             )
         except Exception:
             pass
+        await callback.answer("Approved")
     except XRocketError as e:
         logger.error("Approve payout failed: {}", e)
-        await callback.answer(f"xRocket error: {str(e)[:100]}", show_alert=True)
+        await callback.answer(f"xRocket: {str(e)[:100]}", show_alert=True)
         try:
             await callback.message.answer(f"⚠️ Payout failed:\n<code>{e}</code>", parse_mode="HTML")
         except Exception:
@@ -172,11 +195,11 @@ async def admin_loan_approve(callback: CallbackQuery, session: AsyncSession, bot
         logger.exception("approve error")
         await callback.answer(str(e)[:120], show_alert=True)
 
-    await callback.answer()
 
-
-@router.callback_query(F.data.startswith("admin:loan_reject:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:loan_reject:"))
 async def admin_loan_reject(callback: CallbackQuery, session: AsyncSession, bot: Bot):
+    if await _deny(callback):
+        return
     loan_id = int(callback.data.split(":")[2])
     result = await session.execute(
         select(Loan).where(Loan.id == loan_id).options(selectinload(Loan.user))
@@ -199,11 +222,13 @@ async def admin_loan_reject(callback: CallbackQuery, session: AsyncSession, bot:
         )
     except Exception:
         pass
-    await callback.answer()
+    await callback.answer("Rejected")
 
 
-@router.callback_query(F.data.startswith("admin:users:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:users:"))
 async def admin_users(callback: CallbackQuery, session: AsyncSession):
+    if await _deny(callback):
+        return
     page = int(callback.data.split(":")[2])
     result = await session.execute(
         select(User).order_by(User.created_at.desc()).offset(page * 10).limit(10)
@@ -235,8 +260,10 @@ async def admin_users(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin:loans:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:loans:"))
 async def admin_loans(callback: CallbackQuery, session: AsyncSession):
+    if await _deny(callback):
+        return
     page = int(callback.data.split(":")[2])
     result = await session.execute(
         select(Loan)
@@ -272,8 +299,10 @@ async def admin_loans(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin:block", IsAdmin())
+@router.callback_query(F.data == "admin:block")
 async def admin_block_start(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
     await state.set_state(AdminFSM.block_id)
     await callback.message.edit_text(
         "🚫 <b>Block user</b>\n\nSend Telegram numeric ID:",
@@ -282,8 +311,10 @@ async def admin_block_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminFSM.block_id, IsAdmin())
+@router.message(AdminFSM.block_id)
 async def admin_block_id(message: Message, state: FSMContext):
+    if not _is_admin(message):
+        return
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
@@ -294,8 +325,10 @@ async def admin_block_id(message: Message, state: FSMContext):
     await message.answer("Reason (or - for none):")
 
 
-@router.message(AdminFSM.block_reason, IsAdmin())
+@router.message(AdminFSM.block_reason)
 async def admin_block_reason(message: Message, session: AsyncSession, state: FSMContext):
+    if not _is_admin(message):
+        return
     data = await state.get_data()
     tg_id = data["block_tg_id"]
     reason = (message.text or "-").strip()
@@ -312,15 +345,19 @@ async def admin_block_reason(message: Message, session: AsyncSession, state: FSM
     )
 
 
-@router.callback_query(F.data == "admin:unblock", IsAdmin())
+@router.callback_query(F.data == "admin:unblock")
 async def admin_unblock_start(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
     await state.set_state(AdminFSM.unblock_id)
     await callback.message.edit_text("✅ Send Telegram numeric ID to unblock:")
     await callback.answer()
 
 
-@router.message(AdminFSM.unblock_id, IsAdmin())
+@router.message(AdminFSM.unblock_id)
 async def admin_unblock_id(message: Message, session: AsyncSession, state: FSMContext):
+    if not _is_admin(message):
+        return
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
@@ -334,15 +371,19 @@ async def admin_unblock_id(message: Message, session: AsyncSession, state: FSMCo
     await message.answer(f"✅ User <code>{tg_id}</code> unblocked.", parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin:setlimit", IsAdmin())
+@router.callback_query(F.data == "admin:setlimit")
 async def admin_setlimit_start(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
     await state.set_state(AdminFSM.setlimit_id)
     await callback.message.edit_text("📈 Send Telegram numeric ID:")
     await callback.answer()
 
 
-@router.message(AdminFSM.setlimit_id, IsAdmin())
+@router.message(AdminFSM.setlimit_id)
 async def admin_setlimit_id(message: Message, state: FSMContext):
+    if not _is_admin(message):
+        return
     try:
         tg_id = int((message.text or "").strip())
     except ValueError:
@@ -353,8 +394,10 @@ async def admin_setlimit_id(message: Message, state: FSMContext):
     await message.answer("Credit limit amount (e.g. 10 or 25.5):")
 
 
-@router.message(AdminFSM.setlimit_amount, IsAdmin())
+@router.message(AdminFSM.setlimit_amount)
 async def admin_setlimit_amount(message: Message, session: AsyncSession, state: FSMContext):
+    if not _is_admin(message):
+        return
     data = await state.get_data()
     tg_id = data["limit_tg_id"]
     try:
@@ -372,8 +415,10 @@ async def admin_setlimit_amount(message: Message, session: AsyncSession, state: 
     )
 
 
-@router.callback_query(F.data.startswith("admin:tickets:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:tickets:"))
 async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
+    if await _deny(callback):
+        return
     page = int(callback.data.split(":")[2])
     result = await session.execute(
         select(SupportTicket)
@@ -392,7 +437,7 @@ async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
     lines = ["💬 <b>Open tickets</b>\n"]
     for tk in tickets:
         uname = tk.user.username if tk.user else "-"
-        lines.append(f"#{tk.id} @{uname}\n{tk.message[:80]}...")
+        lines.append(f"#{tk.id} @{uname}\n{(tk.message or '')[:80]}...")
         builder.row(
             InlineKeyboardButton(text=f"Reply #{tk.id}", callback_data=f"admin:reply:{tk.id}")
         )
@@ -404,8 +449,10 @@ async def admin_tickets(callback: CallbackQuery, session: AsyncSession):
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin:reply:"), IsAdmin())
+@router.callback_query(F.data.startswith("admin:reply:"))
 async def admin_reply_start(callback: CallbackQuery, state: FSMContext):
+    if await _deny(callback):
+        return
     ticket_id = int(callback.data.split(":")[2])
     await state.set_state(AdminFSM.reply_ticket)
     await state.update_data(reply_ticket_id=ticket_id)
@@ -413,8 +460,10 @@ async def admin_reply_start(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.message(AdminFSM.reply_ticket, IsAdmin())
+@router.message(AdminFSM.reply_ticket)
 async def admin_reply_send(message: Message, session: AsyncSession, state: FSMContext, bot: Bot):
+    if not _is_admin(message):
+        return
     data = await state.get_data()
     ticket_id = data["reply_ticket_id"]
     result = await session.execute(
@@ -445,11 +494,13 @@ async def admin_reply_send(message: Message, session: AsyncSession, state: FSMCo
     await message.answer(f"✅ Reply to ticket #{ticket_id} sent.")
 
 
-@router.message(F.text.startswith("/block"), IsAdmin())
+@router.message(F.text.startswith("/block"))
 async def cmd_block(message: Message, session: AsyncSession):
+    if not _is_admin(message):
+        return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 2:
-        await message.answer("Usage: /block <id> [reason]", parse_mode="HTML")
+        await message.answer("Usage: /block <id> [reason]")
         return
     tg_id = int(parts[1])
     reason = parts[2] if len(parts) > 2 else "Blocked by admin"
@@ -460,11 +511,13 @@ async def cmd_block(message: Message, session: AsyncSession):
     await message.answer(f"✅ Blocked {tg_id}")
 
 
-@router.message(F.text.startswith("/unblock"), IsAdmin())
+@router.message(F.text.startswith("/unblock"))
 async def cmd_unblock(message: Message, session: AsyncSession):
+    if not _is_admin(message):
+        return
     parts = message.text.split()
     if len(parts) < 2:
-        await message.answer("Usage: /unblock <id>", parse_mode="HTML")
+        await message.answer("Usage: /unblock <id>")
         return
     tg_id = int(parts[1])
     user = await get_or_create_user(session, tg_id)
@@ -474,11 +527,13 @@ async def cmd_unblock(message: Message, session: AsyncSession):
     await message.answer(f"✅ Unblocked {tg_id}")
 
 
-@router.message(F.text.startswith("/setlimit"), IsAdmin())
+@router.message(F.text.startswith("/setlimit"))
 async def cmd_setlimit(message: Message, session: AsyncSession):
+    if not _is_admin(message):
+        return
     parts = message.text.split()
     if len(parts) < 3:
-        await message.answer("Usage: /setlimit <id> <amount>", parse_mode="HTML")
+        await message.answer("Usage: /setlimit <id> <amount>")
         return
     tg_id = int(parts[1])
     amount = Decimal(parts[2])
@@ -486,3 +541,25 @@ async def cmd_setlimit(message: Message, session: AsyncSession):
     user.credit_limit = amount
     await session.commit()
     await message.answer(f"✅ Limit {tg_id} = {amount}")
+
+
+@router.message(F.text == "/admin")
+async def cmd_admin(message: Message, session: AsyncSession, state: FSMContext):
+    """Open admin panel via command — always works for admins."""
+    if not _is_admin(message):
+        await message.answer("⛔ Not an admin.")
+        return
+    # Reuse panel text via fake callback path: send message with same keyboard
+    await state.clear()
+    total_users = await session.scalar(select(func.count(User.id))) or 0
+    pending_loans = (
+        await session.scalar(select(func.count(Loan.id)).where(Loan.status == LoanStatus.PENDING))
+        or 0
+    )
+    text = (
+        f"👑 <b>Admin Panel</b>\n\nUsers: {total_users} | Pending: {pending_loans}\n"
+        f"ID: <code>{message.from_user.id}</code>"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="Open full panel", callback_data="admin:panel"))
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
