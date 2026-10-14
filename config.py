@@ -11,24 +11,20 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Telegram
     bot_token: str
     api_id: int | None = None
     api_hash: str | None = None
 
-    # xRocket
     xrocket_api_key: str
     xrocket_base_url: str = "https://pay.api.xrocket.exchange"
 
-    # Admins
     admins: str = "marcenzo,shibainuo"
 
-    # Database
     database_url: str = "sqlite+aiosqlite:///./data/loan_bot.db"
 
-    # Loan rules
+    # Free amount from $0.10 up to credit limit (initial limit $5)
     default_currency: str = "USDT"
-    min_loan_amount: float = 5.0
+    min_loan_amount: float = 0.10
     max_loan_amount: float = 100.0
     initial_credit_limit: float = 5.0
     credit_multiplier: float = 2.0
@@ -37,7 +33,6 @@ class Settings(BaseSettings):
     max_installments: int = 10
     late_fee_percent: float = 5.0
 
-    # Bot
     default_language: str = "en"
     support_username: str = "marcenzo"
 
