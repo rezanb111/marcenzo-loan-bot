@@ -154,13 +154,26 @@ async def confirm_and_issue(callback: CallbackQuery, session: AsyncSession, stat
             parse_mode="HTML",
         )
     except ValueError as e:
-        await callback.answer(str(e), show_alert=True)
+        await callback.answer(str(e)[:180], show_alert=True)
     except XRocketError as e:
-        logger.error("xRocket payout failed: {}", e)
-        await callback.answer("Payment system error. Try again later.", show_alert=True)
-    except Exception:
+        logger.error("xRocket payout failed: {} | payload={}", e, getattr(e, "payload", None))
+        detail = str(e)[:150]
+        await callback.answer(f"xRocket: {detail}", show_alert=True)
+        # Also send full detail in chat for admin debugging
+        try:
+            await callback.message.answer(
+                f"⚠️ <b>Payout failed</b>\n<code>{detail}</code>\n\n"
+                "Common causes:\n"
+                "• App balance is empty — top up the xRocket Pay app\n"
+                "• Wrong API token / API version (set to Current in @xRocket)\n"
+                "• Recipient must open @xRocket at least once",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    except Exception as e:
         logger.exception("Unexpected error issuing loan")
-        await callback.answer("Internal error", show_alert=True)
+        await callback.answer(f"Error: {str(e)[:120]}", show_alert=True)
 
     await callback.answer()
 
