@@ -1,9 +1,11 @@
 """Colored buttons + premium custom emoji."""
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from locales import t
+
+WEBSITE_URL = "https://rezanb111.github.io/Marc/"
 
 EMOJI = {
     "rocket": "6147654280112248427",
@@ -18,6 +20,7 @@ EMOJI = {
     "lightning": "4990074969372230665",
     "settings": "5929098607192969118",
     "hourglass": "4990168118622946000",
+    "link": "6113813004426416777",
 }
 
 FLAG = {
@@ -46,11 +49,16 @@ LANG_NAMES = {
 }
 
 
-def _btn(text: str, callback_data: str | None = None, **extra) -> InlineKeyboardButton:
+def _btn(text: str, callback_data: str | None = None, url: str | None = None, **extra) -> InlineKeyboardButton:
     kwargs = {"text": text}
     if callback_data is not None:
         kwargs["callback_data"] = callback_data
-    kwargs.update({k: v for k, v in extra.items() if v is not None})
+    if url is not None:
+        kwargs["url"] = url
+    # Prefer style + premium emoji; fall back if Bot API rejects unknown fields
+    for key in ("style", "icon_custom_emoji_id"):
+        if key in extra and extra[key] is not None:
+            kwargs[key] = extra[key]
     try:
         return InlineKeyboardButton(**kwargs)
     except TypeError:
@@ -62,15 +70,42 @@ def _btn(text: str, callback_data: str | None = None, **extra) -> InlineKeyboard
 def language_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for code in ["en", "fa", "ru", "tr", "de", "fr", "ar", "es", "zh", "hi"]:
-        extra = {}
-        if FLAG.get(code):
-            extra["icon_custom_emoji_id"] = FLAG[code]
         try:
-            builder.button(text=LANG_NAMES.get(code, code), callback_data=f"lang:{code}", **extra)
+            if FLAG.get(code):
+                builder.button(
+                    text=LANG_NAMES.get(code, code),
+                    callback_data=f"lang:{code}",
+                    icon_custom_emoji_id=FLAG[code],
+                )
+            else:
+                builder.button(text=LANG_NAMES.get(code, code), callback_data=f"lang:{code}")
         except TypeError:
             builder.button(text=LANG_NAMES.get(code, code), callback_data=f"lang:{code}")
     builder.adjust(2)
     return builder.as_markup()
+
+
+def terms_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _btn(
+                    t("terms_accept", lang),
+                    "terms:accept",
+                    style="success",
+                    icon_custom_emoji_id=EMOJI["check3"],
+                )
+            ],
+            [
+                _btn(
+                    t("terms_decline", lang),
+                    "terms:decline",
+                    style="danger",
+                    icon_custom_emoji_id=EMOJI["cross"],
+                )
+            ],
+        ]
+    )
 
 
 def main_menu_keyboard(lang: str = "en", is_admin: bool = False) -> InlineKeyboardMarkup:
@@ -114,7 +149,12 @@ def main_menu_keyboard(lang: str = "en", is_admin: bool = False) -> InlineKeyboa
                 t("support", lang),
                 "support",
                 icon_custom_emoji_id=EMOJI["heart"],
-            )
+            ),
+            _btn(
+                t("website", lang),
+                url=WEBSITE_URL,
+                icon_custom_emoji_id=EMOJI["link"],
+            ),
         ],
     ]
     if is_admin:
@@ -145,7 +185,9 @@ def amount_keyboard(limit: float, lang: str = "en") -> InlineKeyboardMarkup:
             except TypeError:
                 builder.button(text=f"{a:g} USDT", callback_data=f"loan:amount:{a}")
     builder.adjust(2)
-    builder.row(_btn(t("back", lang), "menu:main", style="danger", icon_custom_emoji_id=EMOJI["cross"]))
+    builder.row(
+        _btn(t("back", lang), "menu:main", style="danger", icon_custom_emoji_id=EMOJI["cross"])
+    )
     return builder.as_markup()
 
 
@@ -162,7 +204,9 @@ def installments_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
         except TypeError:
             builder.button(text=str(n), callback_data=f"loan:installments:{n}")
     builder.adjust(4)
-    builder.row(_btn(t("back", lang), "loan:request", style="danger", icon_custom_emoji_id=EMOJI["cross"]))
+    builder.row(
+        _btn(t("back", lang), "loan:request", style="danger", icon_custom_emoji_id=EMOJI["cross"])
+    )
     return builder.as_markup()
 
 
@@ -170,8 +214,18 @@ def confirm_loan_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                _btn("Confirm", "loan:confirm", style="success", icon_custom_emoji_id=EMOJI["check3"]),
-                _btn(t("cancel", lang), "menu:main", style="danger", icon_custom_emoji_id=EMOJI["cross"]),
+                _btn(
+                    "Confirm",
+                    "loan:confirm",
+                    style="success",
+                    icon_custom_emoji_id=EMOJI["check3"],
+                ),
+                _btn(
+                    t("cancel", lang),
+                    "menu:main",
+                    style="danger",
+                    icon_custom_emoji_id=EMOJI["cross"],
+                ),
             ]
         ]
     )
@@ -180,6 +234,13 @@ def confirm_loan_keyboard(lang: str = "en") -> InlineKeyboardMarkup:
 def back_keyboard(lang: str = "en", callback: str = "menu:main") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_btn(t("back", lang), callback, style="danger", icon_custom_emoji_id=EMOJI["down"])]
+            [
+                _btn(
+                    t("back", lang),
+                    callback,
+                    style="danger",
+                    icon_custom_emoji_id=EMOJI["down"],
+                )
+            ]
         ]
     )
