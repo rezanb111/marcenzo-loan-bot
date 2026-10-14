@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database.models import SupportTicket, TicketStatus
-from keyboards.inline import EMOJI, back_keyboard
+from keyboards.inline import back_keyboard
 from locales import t
 from services.loan_service import get_or_create_user
 
@@ -26,27 +26,16 @@ async def support_menu(callback: CallbackQuery, session: AsyncSession, state: FS
 
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(
-            text="📝 New ticket",
-            callback_data="support:new",
-            style="success",
-            icon_custom_emoji_id=EMOJI.get("heart"),
-        )
+        InlineKeyboardButton(text="📝 New ticket", callback_data="support:new")
     )
     builder.row(
         InlineKeyboardButton(
             text="📩 Message admin directly",
             url=f"https://t.me/{settings.support_username}",
-            style="primary",
         )
     )
     builder.row(
-        InlineKeyboardButton(
-            text=t("back", user.language),
-            callback_data="menu:main",
-            style="danger",
-            icon_custom_emoji_id=EMOJI.get("down"),
-        )
+        InlineKeyboardButton(text="🔙 " + t("back", user.language), callback_data="menu:main")
     )
 
     text = (
