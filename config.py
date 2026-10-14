@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     xrocket_base_url: str = "https://pay.api.xrocket.exchange"
 
     admins: str = "marcenzo,shibainuo"
+    admin_ids: str = ""  # optional: 123456789,987654321
 
     database_url: str = "sqlite+aiosqlite:///./data/loan_bot.db"
 
-    # Free amount from $0.10 up to credit limit (initial limit $5)
     default_currency: str = "USDT"
     min_loan_amount: float = 0.10
     max_loan_amount: float = 100.0
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
 
     @property
     def admin_list(self) -> List[str]:
-        return [a.strip().lower() for a in self.admins.split(",") if a.strip()]
+        return [a.strip().lower().lstrip("@") for a in self.admins.split(",") if a.strip()]
 
 
 @lru_cache
