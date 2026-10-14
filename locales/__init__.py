@@ -33,7 +33,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "support": "Support",
         "invest": "Invest",
         "guide": "Guide",
+        "website": "Website",
         "admin_panel": "Admin Panel",
+        "terms_accept": "I Agree",
+        "terms_decline": "Decline",
         "choose_amount": "How much do you want to borrow?\n\nYour available limit: <b>{limit} USDT</b>",
         "choose_installments": "Choose number of installments:",
         "confirm_loan": (
@@ -77,7 +80,10 @@ TEXTS: dict[str, dict[str, str]] = {
         "support": "پشتیبانی",
         "invest": "سرمایه‌گذاری",
         "guide": "راهنما",
+        "website": "وبسایت",
         "admin_panel": "پنل ادمین",
+        "terms_accept": "موافقم",
+        "terms_decline": "رد می‌کنم",
         "choose_amount": "چقدر وام می‌خوای؟\n\nسقف: <b>{limit} USDT</b>",
         "choose_installments": "تعداد اقساط:",
         "confirm_loan": (
@@ -120,13 +126,10 @@ def t(key: str, lang: str = "en", **kwargs: Any) -> str:
 
 
 def menu_kwargs(user) -> dict:
-    """Common format args for main_menu."""
     success = int(getattr(user, "successful_loans", 0) or 0)
     level = int(getattr(user, "level", 1) or 1)
     n = 3
     to_next = n - (success % n) if success % n != 0 else n
-    if success > 0 and success % n == 0:
-        to_next = n  # just leveled; next cycle
     name = getattr(user, "level_name", None) or f"Level {level}"
     return {
         "limit": user.credit_limit,
