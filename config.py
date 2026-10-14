@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     xrocket_base_url: str = "https://pay.api.xrocket.exchange"
 
     admins: str = "marcenzo,shibainuo"
-    admin_ids: str = ""  # optional: 123456789,987654321
+    admin_ids: str = ""
 
     database_url: str = "sqlite+aiosqlite:///./data/loan_bot.db"
 
@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     default_installments: int = 5
     max_installments: int = 10
     late_fee_percent: float = 5.0
+    loan_interest_percent: float = 1.0  # 1% to investors from borrowers
+    min_invest_amount: float = 1.0
 
     default_language: str = "en"
     support_username: str = "marcenzo"
