@@ -1,6 +1,4 @@
-"""
-Core loan & credit logic.
-"""
+"""Core loan & credit logic."""
 
 from __future__ import annotations
 
@@ -30,7 +28,6 @@ async def get_or_create_user(
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
     if user:
-        # keep profile fresh
         if username and user.username != username:
             user.username = username
         if full_name and user.full_name != full_name:
@@ -55,9 +52,6 @@ async def get_user_by_tg(session: AsyncSession, telegram_id: int) -> Optional[Us
 
 
 def calculate_next_limit(current: Decimal, successful: int) -> Decimal:
-    """
-    After every N successful loans → double the limit (capped at max).
-    """
     if successful > 0 and successful % settings.successful_loans_for_upgrade == 0:
         new_limit = current * Decimal(str(settings.credit_multiplier))
         return min(new_limit, Decimal(str(settings.max_loan_amount)))
@@ -93,7 +87,6 @@ async def create_loan(
     session.add(loan)
     await session.flush()
 
-    # Create installments (due every 7 days for example)
     now = datetime.now(timezone.utc)
     for i in range(1, installments_count + 1):
         inst = Installment(
@@ -105,25 +98,29 @@ async def create_loan(
         )
         session.add(inst)
 
-    # Disburse via xRocket
     client = xrocket or get_xrocket()
+    # clientPayoutId max 50 chars per xRocket docs
+    cid = f"l{loan.id}u{user.telegram_id}"[:50]
     try:
         payout = await client.create_payout(
             telegram_user_id=user.telegram_id,
             amount=str(amount),
             asset=settings.default_currency,
-            description=f"Loan #{loan.id} from Marcenzo Bot",
-            client_payout_id=f"loan-{loan.id}-{user.telegram_id}",
+            description=f"Loan #{loan.id} Marcenzo",
+            client_payout_id=cid,
         )
-        loan.payout_id = str(payout.get("payoutId") or payout.get("id") or "")
-        loan.client_payout_id = f"loan-{loan.id}-{user.telegram_id}"
+        payout = payout or {}
+        loan.payout_id = str(
+            payout.get("payoutId") or payout.get("id") or payout.get("transferId") or ""
+        )
+        loan.client_payout_id = cid
         loan.status = LoanStatus.ACTIVE
         loan.issued_at = now
         loan.due_date = now + timedelta(days=7 * installments_count)
 
         user.total_borrowed += amount
         logger.info("Loan {} issued to user {}", loan.id, user.telegram_id)
-    except Exception as e:
+    except Exception:
         logger.exception("Failed to disburse loan {}", loan.id)
         loan.status = LoanStatus.CANCELLED
         raise
@@ -144,10 +141,8 @@ async def mark_installment_paid(
 
     loan = installment.loan
     user = loan.user
-
     user.total_repaid += paid
 
-    # Check if all installments paid
     all_paid = all(i.status == InstallmentStatus.PAID for i in loan.installments)
     if all_paid:
         loan.status = LoanStatus.COMPLETED
