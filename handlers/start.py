@@ -1,45 +1,13 @@
 from aiogram import F, Router
-from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from keyboards.inline import language_keyboard, main_menu_keyboard
+from keyboards.inline import main_menu_keyboard
 from locales import t
 from services.loan_service import get_or_create_user, is_admin_user
 
 router = Router(name="start")
-
-
-@router.message(CommandStart())
-async def cmd_start(message: Message, session: AsyncSession, state: FSMContext):
-    await state.clear()
-    user = await get_or_create_user(
-        session,
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
-    )
-    await session.commit()
-
-    # Always offer language on /start first message path — show main if already set
-    is_admin = is_admin_user(message.from_user.username, message.from_user.id)
-    text = t(
-        "main_menu",
-        user.language or "en",
-        limit=user.credit_limit,
-        success=user.successful_loans,
-    )
-    await message.answer(
-        text,
-        reply_markup=main_menu_keyboard(user.language or "en", is_admin=is_admin),
-        parse_mode="HTML",
-    )
-    # Language change hint
-    await message.answer(
-        "🌐 Change language:",
-        reply_markup=language_keyboard(),
-    )
 
 
 @router.callback_query(F.data.startswith("lang:"))
