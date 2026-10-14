@@ -4,41 +4,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from keyboards.inline import back_keyboard
 from services.loan_service import get_or_create_user
+from utils.media import send_section
 
 router = Router(name="guide")
 
 FULL_GUIDE = """📖 <b>Marcenzo Loan Bot — User Guide</b>
 
+🛡️ <b>Entry</b>
+Advanced captcha on /start. Optional password (Profile → Security).
+
 🚀 <b>Request Loan</b>
-Borrow from 0.10 USDT up to your credit limit.
-You receive the principal; you repay principal + <b>1% interest</b> in installments.
-Every request needs <b>admin approval</b> before money is sent to your xRocket wallet.
-Credit limit starts at 5 USDT and can double after every 3 successful on-time loans (max 100).
+0.10 USDT up to your limit. Principal + <b>1% interest</b>.
+Admin must approve before xRocket payout.
+
+🏅 <b>Levels</b>
+Every <b>3 successful full repayments</b> → level +1
+(Bronze → Silver → Gold → Platinum → Diamond → Master → Legend)
+Credit limit can also double on the same schedule (max 100).
 
 ⚡ <b>My Loans</b>
-See pending and active loans, installment progress, and pay open installments via xRocket invoice.
+Pending / active loans and installment payments.
 
 💎 <b>Invest</b>
-Deposit USDT into the community fund. When borrowers repay, the <b>1% interest</b> is shared among investors proportional to their stake.
+Fund deposits; share of borrower interest by stake.
 
-⭐ <b>Profile</b>
-Your ID, credit limit, borrowed/repaid totals, invested amount and earned interest.
+⭐ <b>Profile</b> · ❤️ <b>Support</b> · ⚙️ <b>Admin</b>
 
-❤️ <b>Support</b>
-Open a ticket or message admins directly.
-
-⚙️ <b>Admin</b> (admins only)
-Approve/reject loans, block users, set limits, answer tickets.
-
-⚠️ Always open <b>@xRocket</b> at least once so payouts can reach you."""
+Open <b>@xRocket</b> at least once for payouts."""
 
 
 @router.callback_query(F.data == "guide")
 async def show_guide(callback: CallbackQuery, session: AsyncSession):
     user = await get_or_create_user(session, callback.from_user.id)
-    await callback.message.edit_text(
+    await send_section(
+        callback,
         FULL_GUIDE,
+        section="guide",
         reply_markup=back_keyboard(user.language),
-        parse_mode="HTML",
     )
     await callback.answer()
