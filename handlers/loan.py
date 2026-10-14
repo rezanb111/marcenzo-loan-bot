@@ -48,11 +48,11 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
     await state.set_state(LoanFSM.amount)
     min_a = settings.min_loan_amount
     text = (
-        f"💰 <b>درخواست وام</b>\n\n"
-        f"سقف اعتبار شما: <b>{user.credit_limit} USDT</b>\n"
-        f"حداقل مبلغ: <b>{min_a} USDT</b>\n\n"
-        f"مبلغ دلخواه را بنویس (مثلاً 0.5 یا 2.25)\n"
-        f"یا از دکمه‌های سریع استفاده کن:"
+        f"💰 <b>Request a loan</b>\n\n"
+        f"Your credit limit: <b>{user.credit_limit} USDT</b>\n"
+        f"Minimum amount: <b>{min_a} USDT</b>\n\n"
+        f"Type any amount (e.g. 0.5 or 2.25)\n"
+        f"or use a quick button below:"
     )
     await callback.message.edit_text(
         text,
@@ -82,15 +82,15 @@ async def choose_amount_text(message: Message, session: AsyncSession, state: FSM
     try:
         amount = Decimal(raw).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError):
-        await message.answer("❌ مبلغ نامعتبر. مثال: 0.50 یا 1.25")
+        await message.answer("❌ Invalid amount. Example: 0.50 or 1.25")
         return
 
     min_a = Decimal(str(settings.min_loan_amount))
     if amount < min_a:
-        await message.answer(f"❌ حداقل مبلغ {min_a} USDT است.")
+        await message.answer(f"❌ Minimum amount is {min_a} USDT.")
         return
     if amount > user.credit_limit:
-        await message.answer(f"❌ سقف اعتبار شما {user.credit_limit} USDT است.")
+        await message.answer(f"❌ Your credit limit is {user.credit_limit} USDT.")
         return
 
     await state.update_data(amount=float(amount))
@@ -157,10 +157,10 @@ async def confirm_and_issue(callback: CallbackQuery, session: AsyncSession, stat
         await callback.answer(str(e), show_alert=True)
     except XRocketError as e:
         logger.error("xRocket payout failed: {}", e)
-        await callback.answer("خطای سیستم پرداخت. بعداً دوباره امتحان کن.", show_alert=True)
+        await callback.answer("Payment system error. Try again later.", show_alert=True)
     except Exception:
         logger.exception("Unexpected error issuing loan")
-        await callback.answer("خطای داخلی", show_alert=True)
+        await callback.answer("Internal error", show_alert=True)
 
     await callback.answer()
 
@@ -179,7 +179,7 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
         return
 
     builder = InlineKeyboardBuilder()
-    lines = ["📋 <b>وام‌های فعال</b>\n"]
+    lines = ["📋 <b>Active loans</b>\n"]
     for loan in loans:
         paid = sum(1 for i in loan.installments if i.status.value == "paid")
         lines.append(
@@ -187,7 +187,7 @@ async def list_loans(callback: CallbackQuery, session: AsyncSession):
         )
         builder.row(
             InlineKeyboardButton(
-                text=f"وام #{loan.id} — پرداخت",
+                text=f"Loan #{loan.id} — Pay",
                 callback_data=f"repay:loan:{loan.id}",
                 style="success",
             )
