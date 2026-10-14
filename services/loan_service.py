@@ -1,4 +1,4 @@
-"""Core loan & credit logic — loans need admin approval before payout."""
+"""Core loan & credit logic — admin approval + 1% interest to fund investors."""
 
 from __future__ import annotations
 
@@ -12,7 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config import get_settings
-from database.models import Installment, InstallmentStatus, Loan, LoanStatus, User
+from database.models import (
+    Installment,
+    InstallmentStatus,
+    Investment,
+    InvestmentStatus,
+    Loan,
+    LoanStatus,
+    User,
+)
 from services.xrocket import XRocketClient, get_xrocket
 
 settings = get_settings()
@@ -93,12 +101,18 @@ async def create_loan_request(
     if existing.scalars().first():
         raise ValueError("You already have a pending or active loan")
 
-    installment_amount = (amount / installments_count).quantize(Decimal("0.01"))
+    interest_pct = Decimal(str(settings.loan_interest_percent))
+    interest_amount = (amount * interest_pct / Decimal("100")).quantize(Decimal("0.01"))
+    total_repay = (amount + interest_amount).quantize(Decimal("0.01"))
+    installment_amount = (total_repay / installments_count).quantize(Decimal("0.01"))
     now = datetime.now(timezone.utc)
 
     loan = Loan(
         user_id=user.id,
         amount=amount,
+        interest_percent=interest_pct,
+        interest_amount=interest_amount,
+        total_repay=total_repay,
         currency=settings.default_currency,
         installments_count=installments_count,
         installment_amount=installment_amount,
@@ -118,7 +132,6 @@ async def create_loan_request(
             )
         )
     await session.flush()
-    logger.info("Loan request #{} PENDING for user {}", loan.id, user.telegram_id)
     return loan
 
 
@@ -156,7 +169,6 @@ async def approve_and_disburse(
     loan.due_date = now + timedelta(days=7 * loan.installments_count)
     user.total_borrowed += loan.amount
     await session.flush()
-    logger.info("Loan {} APPROVED & disbursed to {}", loan.id, user.telegram_id)
     return loan
 
 
@@ -166,6 +178,27 @@ async def reject_loan(session: AsyncSession, loan: Loan) -> Loan:
     loan.status = LoanStatus.CANCELLED
     await session.flush()
     return loan
+
+
+async def distribute_interest(session: AsyncSession, interest: Decimal) -> None:
+    """Split interest among active investors proportional to their stake."""
+    if interest <= 0:
+        return
+    result = await session.execute(
+        select(Investment)
+        .where(Investment.status == InvestmentStatus.ACTIVE)
+        .options(selectinload(Investment.user))
+    )
+    invs = list(result.scalars().all())
+    total = sum((i.amount for i in invs), Decimal("0"))
+    if total <= 0 or not invs:
+        return
+    for inv in invs:
+        share = (interest * inv.amount / total).quantize(Decimal("0.01"))
+        inv.earned += share
+        if inv.user:
+            inv.user.earned_interest += share
+    await session.flush()
 
 
 async def mark_installment_paid(
@@ -180,11 +213,14 @@ async def mark_installment_paid(
     loan = installment.loan
     user = loan.user
     user.total_repaid += paid
+
     if all(i.status == InstallmentStatus.PAID for i in loan.installments):
         loan.status = LoanStatus.COMPLETED
         loan.completed_at = datetime.now(timezone.utc)
         user.successful_loans += 1
         user.credit_limit = calculate_next_limit(user.credit_limit, user.successful_loans)
+        # Full interest goes to investors when loan completes
+        await distribute_interest(session, loan.interest_amount or Decimal("0"))
     await session.flush()
 
 
@@ -209,3 +245,12 @@ async def get_pending_loans(session: AsyncSession) -> list[Loan]:
         .order_by(Loan.created_at.asc())
     )
     return list(result.scalars().all())
+
+
+async def fund_stats(session: AsyncSession) -> dict:
+    result = await session.execute(
+        select(Investment).where(Investment.status == InvestmentStatus.ACTIVE)
+    )
+    invs = list(result.scalars().all())
+    total = sum((i.amount for i in invs), Decimal("0"))
+    return {"pool": total, "investors": len(invs)}
