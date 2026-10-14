@@ -1,3 +1,3 @@
-from . import admin, guide, invest, loan, profile, repay, start, support
+from . import admin, auth, guide, invest, loan, profile, repay, start, support
 
-__all__ = ["start", "loan", "repay", "invest", "guide", "profile", "support", "admin"]
+__all__ = ["auth", "start", "loan", "repay", "invest", "guide", "profile", "support", "admin"]
