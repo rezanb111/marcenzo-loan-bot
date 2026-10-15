@@ -8,7 +8,6 @@ import sys
 from decimal import Decimal
 from pathlib import Path
 
-# project root
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -16,7 +15,7 @@ from sqlalchemy import delete, update
 
 from config import get_settings
 from database.models import Installment, Loan, User
-from database.session import async_session_factory, init_db
+from database.session import async_session, init_db
 
 
 async def reset_all() -> None:
@@ -24,8 +23,7 @@ async def reset_all() -> None:
     initial = Decimal(str(settings.initial_credit_limit))
 
     await init_db()
-    async with async_session_factory() as session:
-        # child tables first
+    async with async_session() as session:
         r1 = await session.execute(delete(Installment))
         r2 = await session.execute(delete(Loan))
         await session.execute(
