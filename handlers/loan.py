@@ -11,13 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from keyboards.inline import (
     amount_keyboard,
-    back_keyboard,
     confirm_loan_keyboard,
     installments_keyboard,
     main_menu_keyboard,
 )
 from locales import menu_kwargs, t
 from services.loan_service import (
+    base_interest,
     create_loan_request,
     get_active_loans,
     get_admin_telegram_ids,
@@ -36,6 +36,18 @@ class LoanFSM(StatesGroup):
     confirm = State()
 
 
+async def _safe_text(callback: CallbackQuery, text: str, reply_markup=None) -> None:
+    """edit_text fails on photo messages — always fall back to answer."""
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
 @router.callback_query(F.data == "loan:request")
 async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     user = await get_or_create_user(
@@ -52,11 +64,16 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         return
 
     await state.set_state(LoanFSM.amount)
-    text = t(
-        "loan_guide",
-        user.language,
-        limit=user.credit_limit,
-        min_a=settings.min_loan_amount,
+    text = (
+        f"🚀 <b>Request a loan</b>\n\n"
+        f"• Interest: <b>{settings.loan_interest_percent:g}%</b> for first "
+        f"<b>{settings.interest_period_days}</b> days\n"
+        f"• After due: <b>+{settings.late_increase_percent:g}%</b> each extra "
+        f"{settings.interest_period_days} days\n"
+        f"• Installments every {settings.installment_period_days} days\n"
+        f"• Admin approval required before payout\n\n"
+        f"Your limit: <b>{user.credit_limit} USDT</b> · Min: <b>{settings.min_loan_amount} USDT</b>\n"
+        f"Type an amount or use buttons:"
     )
     await send_section(
         callback,
@@ -67,22 +84,17 @@ async def request_loan(callback: CallbackQuery, session: AsyncSession, state: FS
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("loan:amount:"), LoanFSM.amount)
+@router.callback_query(F.data.startswith("loan:amount:"))
 async def choose_amount_btn(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     amount = float(callback.data.split(":")[2])
     await state.update_data(amount=amount)
     await state.set_state(LoanFSM.installments)
     user = await get_or_create_user(session, callback.from_user.id)
-    try:
-        await callback.message.edit_text(
-            t("choose_installments", user.language),
-            reply_markup=installments_keyboard(user.language),
-        )
-    except Exception:
-        await callback.message.answer(
-            t("choose_installments", user.language),
-            reply_markup=installments_keyboard(user.language),
-        )
+    await _safe_text(
+        callback,
+        t("choose_installments", user.language),
+        installments_keyboard(user.language),
+    )
     await callback.answer()
 
 
@@ -112,40 +124,41 @@ async def choose_amount_text(message: Message, session: AsyncSession, state: FSM
     )
 
 
-@router.callback_query(F.data.startswith("loan:installments:"), LoanFSM.installments)
+@router.callback_query(F.data.startswith("loan:installments:"))
 async def choose_installments(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
     count = int(callback.data.split(":")[2])
     data = await state.get_data()
+    if "amount" not in data:
+        await callback.answer("Start again from Request Loan", show_alert=True)
+        return
     amount = Decimal(str(data["amount"]))
-    interest = (amount * Decimal(str(settings.loan_interest_percent)) / Decimal("100")).quantize(
-        Decimal("0.01")
-    )
-    total = amount + interest
+    _pct, interest, total = base_interest(amount)
     each = (total / count).quantize(Decimal("0.01"))
     await state.update_data(installments=count)
     await state.set_state(LoanFSM.confirm)
 
     user = await get_or_create_user(session, callback.from_user.id)
-    text = t(
-        "confirm_loan",
-        user.language,
-        amount=amount,
-        interest=interest,
-        total=total,
-        count=count,
-        each=each,
+    text = (
+        f"Confirm loan of <b>{amount} USDT</b>\n"
+        f"Interest {settings.loan_interest_percent:g}% / {settings.interest_period_days}d: "
+        f"<b>{interest} USDT</b>\n"
+        f"Total repay (on time): <b>{total} USDT</b>\n"
+        f"in <b>{count}</b> installments of <b>{each} USDT</b>\n"
+        f"(every {settings.installment_period_days} days)\n\n"
+        f"⚠️ After due date: +{settings.late_increase_percent:g}% per extra "
+        f"{settings.interest_period_days} days.\n\n"
+        f"⏳ After confirm → waiting for <b>admin approval</b>."
     )
-    await callback.message.edit_text(
-        text + "\n\n⏳ After confirm → waiting for <b>admin approval</b>.",
-        reply_markup=confirm_loan_keyboard(user.language),
-        parse_mode="HTML",
-    )
+    await _safe_text(callback, text, confirm_loan_keyboard(user.language))
     await callback.answer()
 
 
-@router.callback_query(F.data == "loan:confirm", LoanFSM.confirm)
+@router.callback_query(F.data == "loan:confirm")
 async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot):
     data = await state.get_data()
+    if "amount" not in data or "installments" not in data:
+        await callback.answer("Session expired. Start again.", show_alert=True)
+        return
     amount = Decimal(str(data["amount"]))
     count = int(data["installments"])
 
@@ -161,14 +174,14 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
         await session.commit()
         await state.clear()
 
-        await callback.message.edit_text(
+        await _safe_text(
+            callback,
             f"⏳ <b>Loan request #{loan.id} submitted</b>\n\n"
             f"Principal: <b>{amount} USDT</b>\n"
-            f"Interest 1%: <b>{loan.interest_amount} USDT</b>\n"
+            f"Interest {loan.interest_percent}%: <b>{loan.interest_amount} USDT</b>\n"
             f"Total repay: <b>{loan.total_repay} USDT</b>\n"
             f"Installments: <b>{count}</b> × {loan.installment_amount}\n\n"
             f"Waiting for admin approval.",
-            parse_mode="HTML",
         )
 
         admin_ids = await get_admin_telegram_ids(session)
@@ -181,7 +194,7 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
             f"🔔 <b>New loan request #{loan.id}</b>\n\n"
             f"User: @{user.username or '-'} (<code>{user.telegram_id}</code>)\n"
             f"Level: {user.level} ({user.level_name})\n"
-            f"Principal: <b>{amount} USDT</b> + 1% interest\n"
+            f"Principal: <b>{amount} USDT</b> + {loan.interest_percent}%\n"
             f"Total repay: {loan.total_repay} · {count} inst\n"
             f"Limit: {user.credit_limit} · Success: {user.successful_loans}"
         )
@@ -193,55 +206,67 @@ async def confirm_loan(callback: CallbackQuery, session: AsyncSession, state: FS
 
         is_admin = is_admin_user(callback.from_user.username, callback.from_user.id)
         await callback.message.answer(
-            t("main_menu", user.language, **menu_kwargs(user)),
-            reply_markup=main_menu_keyboard(user.language, is_admin=is_admin),
+            t("main_menu", user.language or "en", **menu_kwargs(user)),
+            reply_markup=main_menu_keyboard(user.language or "en", is_admin=is_admin),
             parse_mode="HTML",
         )
+        await callback.answer("Submitted")
     except ValueError as e:
         await callback.answer(str(e)[:180], show_alert=True)
     except Exception as e:
         logger.exception("loan confirm error")
         await callback.answer(f"Error: {str(e)[:120]}", show_alert=True)
 
-    await callback.answer()
-
 
 @router.callback_query(F.data == "loan:list")
 async def list_loans(callback: CallbackQuery, session: AsyncSession):
-    user = await get_or_create_user(session, callback.from_user.id)
-    loans = await get_active_loans(session, user.id)
-
-    if not loans:
-        await callback.message.edit_text(
-            "⚡ <b>My Loans</b>\n\n" + t("no_active_loans", user.language),
-            reply_markup=back_keyboard(user.language),
-            parse_mode="HTML",
+    try:
+        user = await get_or_create_user(
+            session,
+            telegram_id=callback.from_user.id,
+            username=callback.from_user.username,
+            full_name=callback.from_user.full_name,
         )
-        await callback.answer()
-        return
+        loans = await get_active_loans(session, user.id)
 
-    builder = InlineKeyboardBuilder()
-    lines = [
-        "⚡ <b>My Loans</b>\n\n"
-        "Pending = waiting admin. Active = repay (principal + 1% interest).\n"
-    ]
-    for loan in loans:
-        paid = sum(1 for i in loan.installments if i.status.value == "paid")
-        st = loan.status.value
-        lines.append(
-            f"#{loan.id} — {loan.amount} (+{loan.interest_amount or 0} int) [{st}] "
-            f"({paid}/{loan.installments_count})"
-        )
-        if st == "active":
-            builder.row(
-                InlineKeyboardButton(
-                    text=f"Loan #{loan.id} — Pay",
-                    callback_data=f"repay:loan:{loan.id}",
-                )
+        builder = InlineKeyboardBuilder()
+        if not loans:
+            text = (
+                "⚡ <b>My Loans</b>\n\n"
+                + t("no_active_loans", user.language or "en")
+                + "\n\nUse <b>Request Loan</b> to start."
             )
+            builder.row(InlineKeyboardButton(text="🚀 Request Loan", callback_data="loan:request"))
+            builder.row(InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main"))
+            await _safe_text(callback, text, builder.as_markup())
+            await callback.answer()
+            return
 
-    builder.row(InlineKeyboardButton(text=t("back", user.language), callback_data="menu:main"))
-    await callback.message.edit_text(
-        "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML"
-    )
-    await callback.answer()
+        lines = [
+            "⚡ <b>My Loans</b>\n",
+            f"Interest: {settings.loan_interest_percent:g}% / {settings.interest_period_days}d · "
+            f"late +{settings.late_increase_percent:g}% / week\n",
+        ]
+        for loan in loans:
+            paid = sum(1 for i in (loan.installments or []) if i.status.value == "paid")
+            st = loan.status.value
+            lines.append(
+                f"\n#{loan.id} — <b>{loan.amount}</b> USDT (+{loan.interest_amount or 0}) "
+                f"[{st}] ({paid}/{loan.installments_count})"
+            )
+            if st == "active":
+                builder.row(
+                    InlineKeyboardButton(
+                        text=f"💳 Loan #{loan.id} — Pay installments",
+                        callback_data=f"repay:loan:{loan.id}",
+                    )
+                )
+            elif st == "pending":
+                lines.append("  ⏳ Waiting admin approval")
+
+        builder.row(InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main"))
+        await _safe_text(callback, "\n".join(lines), builder.as_markup())
+        await callback.answer()
+    except Exception as e:
+        logger.exception("loan:list failed")
+        await callback.answer(f"Error: {str(e)[:100]}", show_alert=True)
