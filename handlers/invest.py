@@ -1,4 +1,4 @@
-"""Investment fund — users deposit USDT; earn share of 1% loan interest."""
+"""Investment fund — deposit USDT; earn share of borrower interest (10%/7d model)."""
 
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -14,80 +14,68 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database.models import Investment, InvestmentStatus
-from keyboards.inline import EMOJI, _btn
 from services.loan_service import fund_stats, get_or_create_user
 from services.xrocket import get_xrocket
 
 router = Router(name="invest")
 settings = get_settings()
 
-GUIDE = (
-    "💎 <b>Investment Fund</b>\n\n"
-    "• Deposit USDT into the community fund.\n"
-    "• Borrowers pay <b>1% interest</b> on each loan.\n"
-    "• That interest is shared among investors by stake size.\n"
-    "• Example: you hold 10% of the pool → you get 10% of each loan's interest.\n\n"
-    "Min deposit: <b>{min_inv} USDT</b>\n"
-    "Pool size: <b>{pool} USDT</b> · Investors: <b>{n}</b>\n"
-    "Your stake: <b>{mine} USDT</b> · Earned: <b>{earned} USDT</b>"
-)
-
 
 class InvestFSM(StatesGroup):
     amount = State()
 
 
+async def _safe_text(callback: CallbackQuery, text: str, reply_markup=None) -> None:
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode="HTML")
+    except Exception:
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+
+
 async def _show_invest_home(callback: CallbackQuery, session: AsyncSession):
     user = await get_or_create_user(session, callback.from_user.id)
     stats = await fund_stats(session)
-    text = GUIDE.format(
-        min_inv=settings.min_invest_amount,
-        pool=stats["pool"],
-        n=stats["investors"],
-        mine=user.invested_amount,
-        earned=user.earned_interest,
+    text = (
+        "💎 <b>Investment Fund</b>\n\n"
+        f"• Borrowers pay <b>{settings.loan_interest_percent:g}%</b> for each "
+        f"{settings.interest_period_days}-day period.\n"
+        f"• Late loans add +{settings.late_increase_percent:g}% per extra week "
+        f"(system/admin side).\n"
+        f"• Base interest is shared among investors by stake size.\n"
+        f"• Example: 10% of pool → 10% of each loan’s base interest.\n\n"
+        f"Min deposit: <b>{settings.min_invest_amount} USDT</b>\n"
+        f"Pool size: <b>{stats['pool']} USDT</b> · Investors: <b>{stats['investors']}</b>\n"
+        f"Your stake: <b>{user.invested_amount} USDT</b> · Earned: <b>{user.earned_interest} USDT</b>"
     )
     builder = InlineKeyboardBuilder()
-    builder.row(
-        _btn(
-            "💵 Deposit to fund",
-            "invest:deposit",
-            style="success",
-            icon_custom_emoji_id=EMOJI.get("green"),
-        )
-    )
-    builder.row(
-        _btn(
-            "✅ I paid — activate",
-            "invest:activate",
-            style="primary",
-            icon_custom_emoji_id=EMOJI.get("check"),
-        )
-    )
-    builder.row(
-        _btn(
-            "🔙 Back",
-            "menu:main",
-            style="danger",
-            icon_custom_emoji_id=EMOJI.get("down"),
-        )
-    )
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    builder.row(InlineKeyboardButton(text="💵 Deposit to fund", callback_data="invest:deposit"))
+    builder.row(InlineKeyboardButton(text="✅ I paid — activate", callback_data="invest:activate"))
+    builder.row(InlineKeyboardButton(text="🏠 Main menu", callback_data="menu:main"))
+    await _safe_text(callback, text, builder.as_markup())
 
 
 @router.callback_query(F.data == "invest")
 async def invest_home(callback: CallbackQuery, session: AsyncSession, state: FSMContext):
-    await state.clear()
-    await _show_invest_home(callback, session)
-    await callback.answer()
+    try:
+        await state.clear()
+        await _show_invest_home(callback, session)
+        await callback.answer()
+    except Exception as e:
+        logger.exception("invest home")
+        await callback.answer(str(e)[:100], show_alert=True)
 
 
 @router.callback_query(F.data == "invest:deposit")
 async def invest_deposit_start(callback: CallbackQuery, state: FSMContext):
     await state.set_state(InvestFSM.amount)
-    await callback.message.edit_text(
+    await _safe_text(
+        callback,
         f"💵 Enter deposit amount in USDT (min {settings.min_invest_amount}):\n\n"
-        f"After paying the invoice, return here and tap Activate."
+        f"After paying the invoice, return and tap <b>I paid — activate</b>.",
     )
     await callback.answer()
 
@@ -129,8 +117,11 @@ async def invest_deposit_amount(message: Message, session: AsyncSession, state: 
         )
         link = None
         if isinstance(invoice, dict):
+            links = invoice.get("links") or {}
             link = (
-                invoice.get("link")
+                links.get("webLink")
+                or links.get("botLink")
+                or invoice.get("link")
                 or invoice.get("paymentLink")
                 or invoice.get("url")
                 or (invoice.get("data") or {}).get("link")
@@ -157,31 +148,36 @@ async def invest_deposit_amount(message: Message, session: AsyncSession, state: 
         await session.commit()
         await state.clear()
         await message.answer(
-            f"Deposit #{inv.id} pending.\nInvoice error: {e}\n"
-            f"Contact admin or try Activate after manual payment."
+            f"Deposit #{inv.id} saved as pending.\nInvoice error: <code>{e}</code>\n"
+            f"Contact admin or try Activate after manual payment.",
+            parse_mode="HTML",
         )
 
 
 @router.callback_query(F.data == "invest:activate")
 async def invest_activate(callback: CallbackQuery, session: AsyncSession):
-    user = await get_or_create_user(session, callback.from_user.id)
-    result = await session.execute(
-        select(Investment)
-        .where(
-            Investment.user_id == user.id,
-            Investment.status == InvestmentStatus.PENDING,
+    try:
+        user = await get_or_create_user(session, callback.from_user.id)
+        result = await session.execute(
+            select(Investment)
+            .where(
+                Investment.user_id == user.id,
+                Investment.status == InvestmentStatus.PENDING,
+            )
+            .order_by(Investment.created_at.desc())
+            .limit(1)
         )
-        .order_by(Investment.created_at.desc())
-        .limit(1)
-    )
-    inv = result.scalar_one_or_none()
-    if not inv:
-        await callback.answer("No pending deposit", show_alert=True)
-        return
+        inv = result.scalar_one_or_none()
+        if not inv:
+            await callback.answer("No pending deposit", show_alert=True)
+            return
 
-    inv.status = InvestmentStatus.ACTIVE
-    inv.activated_at = datetime.now(timezone.utc)
-    user.invested_amount += inv.amount
-    await session.commit()
-    await callback.answer("Deposit activated!", show_alert=True)
-    await _show_invest_home(callback, session)
+        inv.status = InvestmentStatus.ACTIVE
+        inv.activated_at = datetime.now(timezone.utc)
+        user.invested_amount += inv.amount
+        await session.commit()
+        await callback.answer("Deposit activated! ✅", show_alert=True)
+        await _show_invest_home(callback, session)
+    except Exception as e:
+        logger.exception("invest activate")
+        await callback.answer(str(e)[:100], show_alert=True)
