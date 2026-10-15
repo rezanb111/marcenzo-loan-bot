@@ -1,10 +1,9 @@
-"""Core loan & credit logic — admin approval, 1% interest, levels."""
+"""Core loan & credit logic — 10%/7d interest, late +1%/week, levels."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional
 
 from loguru import logger
 from sqlalchemy import select
@@ -84,8 +83,7 @@ def calculate_next_limit(current: Decimal, successful: int) -> Decimal:
 
 
 def apply_level_up(user: User) -> bool:
-    """Every 3 successful loans → level +1. Returns True if leveled up."""
-    n = settings.successful_loans_for_upgrade  # 3
+    n = settings.successful_loans_for_upgrade
     if user.successful_loans > 0 and user.successful_loans % n == 0:
         user.level = int(user.level or 1) + 1
         logger.info(
@@ -96,6 +94,34 @@ def apply_level_up(user: User) -> bool:
         )
         return True
     return False
+
+
+def base_interest(amount: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """10% for first 7-day period. Returns (pct, interest_amount, total_repay)."""
+    pct = Decimal(str(settings.loan_interest_percent))
+    interest = (amount * pct / Decimal("100")).quantize(Decimal("0.01"))
+    total = (amount + interest).quantize(Decimal("0.01"))
+    return pct, interest, total
+
+
+def payable_installment_amount(inst: Installment, now: datetime | None = None) -> Decimal:
+    """
+    Base installment amount + late increase:
+    after each full 7 days past due_date → +1% of original installment.
+    """
+    now = now or datetime.now(timezone.utc)
+    base = Decimal(str(inst.amount))
+    due = inst.due_date
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    if now <= due:
+        return base
+    days_late = (now - due).days
+    period = int(getattr(settings, "interest_period_days", 7) or 7)
+    blocks = max(0, days_late // period)
+    extra_pct = Decimal(str(getattr(settings, "late_increase_percent", 1.0))) * blocks
+    extra = (base * extra_pct / Decimal("100")).quantize(Decimal("0.01"))
+    return (base + extra).quantize(Decimal("0.01"))
 
 
 async def create_loan_request(
@@ -120,11 +146,10 @@ async def create_loan_request(
     if existing.scalars().first():
         raise ValueError("You already have a pending or active loan")
 
-    interest_pct = Decimal(str(settings.loan_interest_percent))
-    interest_amount = (amount * interest_pct / Decimal("100")).quantize(Decimal("0.01"))
-    total_repay = (amount + interest_amount).quantize(Decimal("0.01"))
+    interest_pct, interest_amount, total_repay = base_interest(amount)
     installment_amount = (total_repay / installments_count).quantize(Decimal("0.01"))
     now = datetime.now(timezone.utc)
+    period = int(getattr(settings, "installment_period_days", 7) or 7)
 
     loan = Loan(
         user_id=user.id,
@@ -146,7 +171,7 @@ async def create_loan_request(
                 loan_id=loan.id,
                 number=i,
                 amount=installment_amount,
-                due_date=now + timedelta(days=7 * i),
+                due_date=now + timedelta(days=period * i),
                 status=InstallmentStatus.PENDING,
             )
         )
@@ -170,6 +195,7 @@ async def approve_and_disburse(
     client = xrocket or get_xrocket()
     cid = f"l{loan.id}u{user.telegram_id}"[:50]
     now = datetime.now(timezone.utc)
+    period = int(getattr(settings, "installment_period_days", 7) or 7)
 
     payout = await client.create_payout(
         telegram_user_id=user.telegram_id,
@@ -185,7 +211,12 @@ async def approve_and_disburse(
     loan.client_payout_id = cid
     loan.status = LoanStatus.ACTIVE
     loan.issued_at = now
-    loan.due_date = now + timedelta(days=7 * loan.installments_count)
+    loan.due_date = now + timedelta(days=period * loan.installments_count)
+
+    # Refresh installment due dates from issue time
+    for inst in sorted(loan.installments or [], key=lambda x: x.number):
+        inst.due_date = now + timedelta(days=period * inst.number)
+
     user.total_borrowed += loan.amount
     await session.flush()
     return loan
@@ -224,8 +255,7 @@ async def mark_installment_paid(
     installment: Installment,
     paid_amount: Decimal | None = None,
 ) -> bool:
-    """Returns True if user leveled up on full loan completion."""
-    paid = paid_amount or installment.amount
+    paid = paid_amount or payable_installment_amount(installment)
     installment.paid_amount = paid
     installment.status = InstallmentStatus.PAID
     installment.paid_at = datetime.now(timezone.utc)
@@ -240,6 +270,7 @@ async def mark_installment_paid(
         user.successful_loans += 1
         user.credit_limit = calculate_next_limit(user.credit_limit, user.successful_loans)
         leveled = apply_level_up(user)
+        # Base interest share to investors (late fees stay with system/admins)
         await distribute_interest(session, loan.interest_amount or Decimal("0"))
     await session.flush()
     return leveled
