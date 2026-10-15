@@ -29,11 +29,16 @@ class Settings(BaseSettings):
     initial_credit_limit: float = 5.0
     credit_multiplier: float = 2.0
     successful_loans_for_upgrade: int = 3
-    default_installments: int = 5
+    default_installments: int = 1
     max_installments: int = 10
-    late_fee_percent: float = 5.0
-    loan_interest_percent: float = 1.0  # 1% to investors from borrowers
+    # Interest: 10% for first 7 days; +1% for each extra full 7 days past due
+    loan_interest_percent: float = 10.0
+    interest_period_days: int = 7
+    late_increase_percent: float = 1.0  # +1% after each extra 7-day block
+    installment_period_days: int = 7
     min_invest_amount: float = 1.0
+    # Investor yield mirror: share of borrower interest (same pool model)
+    investor_weekly_target_percent: float = 10.0
 
     default_language: str = "en"
     support_username: str = "marcenzo"
