@@ -11,9 +11,14 @@ from sqlalchemy.orm import selectinload
 
 from config import get_settings
 from database.models import Installment, InstallmentStatus, Loan
-from locales import t
 from services.loan_service import get_or_create_user, mark_installment_paid, payable_installment_amount
-from services.xrocket import XRocketError, get_xrocket
+from services.polygon_pay import (
+    PolygonError,
+    async_get_usdt_balance,
+    async_sweep_deposit_to_treasury,
+    get_deposit_wallet,
+    payment_instructions,
+)
 
 router = Router(name="repay")
 settings = get_settings()
@@ -49,8 +54,9 @@ async def show_loan_installments(callback: CallbackQuery, session: AsyncSession)
         now = datetime.now(timezone.utc)
         lines = [
             f"📋 <b>Loan #{loan.id}</b> — principal {loan.amount} {loan.currency}\n",
+            f"Pay on <b>Polygon</b> USDT · each installment has its own deposit address\n",
             f"Base interest: {loan.interest_percent}% · "
-            f"late +{settings.late_increase_percent:g}% per {settings.interest_period_days}d past due\n",
+            f"late +{settings.late_increase_percent:g}% / {settings.interest_period_days}d\n",
         ]
         builder = InlineKeyboardBuilder()
 
@@ -88,7 +94,7 @@ async def show_loan_installments(callback: CallbackQuery, session: AsyncSession)
 
 
 @router.callback_query(F.data.startswith("repay:inst:"))
-async def create_repayment_invoice(callback: CallbackQuery, session: AsyncSession):
+async def show_deposit_address(callback: CallbackQuery, session: AsyncSession):
     try:
         inst_id = int(callback.data.split(":")[2])
         user = await get_or_create_user(session, callback.from_user.id)
@@ -108,52 +114,24 @@ async def create_repayment_invoice(callback: CallbackQuery, session: AsyncSessio
             return
 
         pay_amt = payable_installment_amount(inst)
-        xrocket = get_xrocket()
-        try:
-            invoice = await xrocket.create_invoice(
-                amount=str(pay_amt),
-                currency="USDT",
-                description=f"Repay Loan #{inst.loan_id} Inst #{inst.number}",
-                client_invoice_id=f"rp{inst.id}u{user.telegram_id}"[:50],
-                telegram_id=user.telegram_id,
-                expires_in=86400 * 3,
-            )
-        except XRocketError as e:
-            logger.error("Invoice creation failed: {}", e)
-            await callback.answer(f"Payment error: {str(e)[:100]}", show_alert=True)
-            return
+        wallet = get_deposit_wallet(inst.id, user.telegram_id)
+        # Store address in invoice_link field for reference
+        inst.invoice_link = wallet.address
+        inst.invoice_id = f"poly-dep-{inst.id}"
+        await session.commit()
 
-        link = None
-        if isinstance(invoice, dict):
-            links = invoice.get("links") or {}
-            link = (
-                links.get("webLink")
-                or links.get("botLink")
-                or invoice.get("link")
-                or invoice.get("paymentLink")
-                or invoice.get("url")
-            )
-            inst.invoice_id = str(
-                invoice.get("invoiceId") or invoice.get("id") or ""
-            )
-            inst.invoice_link = link
-            await session.commit()
-
-        text = (
-            f"💳 <b>Pay Installment #{inst.number}</b>\n\n"
-            f"Amount due: <b>{pay_amt} USDT</b>\n"
-            f"(base {inst.amount}"
-            + (f" + late to {pay_amt}" if pay_amt != Decimal(str(inst.amount)) else "")
-            + ")\n\n"
-            f"Pay via xRocket, then tap <b>I paid — Check</b>."
-        )
+        text = payment_instructions(inst.id, user.telegram_id, pay_amt)
         builder = InlineKeyboardBuilder()
-        if link:
-            builder.row(InlineKeyboardButton(text="💸 Open Pay Link", url=link))
         builder.row(
             InlineKeyboardButton(
-                text="✅ I paid — Check",
+                text="✅ I paid — Verify & Sweep",
                 callback_data=f"repay:check:{inst.id}",
+            )
+        )
+        builder.row(
+            InlineKeyboardButton(
+                text="🔄 Refresh balance",
+                callback_data=f"repay:bal:{inst.id}",
             )
         )
         builder.row(
@@ -164,13 +142,40 @@ async def create_repayment_invoice(callback: CallbackQuery, session: AsyncSessio
         )
         await _safe_text(callback, text, builder.as_markup())
         await callback.answer()
+    except PolygonError as e:
+        await callback.answer(str(e)[:120], show_alert=True)
     except Exception as e:
         logger.exception("repay:inst")
         await callback.answer(str(e)[:120], show_alert=True)
 
 
+@router.callback_query(F.data.startswith("repay:bal:"))
+async def refresh_balance(callback: CallbackQuery, session: AsyncSession):
+    try:
+        inst_id = int(callback.data.split(":")[2])
+        user = await get_or_create_user(session, callback.from_user.id)
+        result = await session.execute(
+            select(Installment)
+            .where(Installment.id == inst_id)
+            .options(selectinload(Installment.loan))
+        )
+        inst = result.scalar_one_or_none()
+        if not inst or inst.loan.user_id != user.id:
+            await callback.answer("Not found", show_alert=True)
+            return
+        w = get_deposit_wallet(inst.id, user.telegram_id)
+        bal = await async_get_usdt_balance(w.address)
+        need = payable_installment_amount(inst)
+        await callback.answer(
+            f"Deposit {w.address[:10]}… balance: {bal} USDT (need {need})",
+            show_alert=True,
+        )
+    except Exception as e:
+        await callback.answer(str(e)[:100], show_alert=True)
+
+
 @router.callback_query(F.data.startswith("repay:check:"))
-async def check_payment(callback: CallbackQuery, session: AsyncSession):
+async def verify_and_sweep(callback: CallbackQuery, session: AsyncSession):
     try:
         inst_id = int(callback.data.split(":")[2])
         user = await get_or_create_user(session, callback.from_user.id)
@@ -189,40 +194,59 @@ async def check_payment(callback: CallbackQuery, session: AsyncSession):
             await callback.answer("Already paid ✅", show_alert=True)
             return
 
-        if not inst.invoice_id:
-            await callback.answer("No invoice yet — create pay link first", show_alert=True)
+        need = payable_installment_amount(inst)
+        # Allow small underpay tolerance 0.01
+        min_ok = need - Decimal("0.01")
+
+        await callback.answer("Checking chain & sweeping…")
+        sweep = await async_sweep_deposit_to_treasury(
+            installment_id=inst.id,
+            user_telegram_id=user.telegram_id,
+            min_amount=min_ok,
+        )
+
+        if not sweep.get("ok"):
+            reason = sweep.get("reason")
+            got = sweep.get("usdt")
+            if reason == "no_usdt":
+                await callback.answer(
+                    "No USDT on your deposit address yet. Send payment and retry.",
+                    show_alert=True,
+                )
+            elif reason == "below_min":
+                await callback.answer(
+                    f"Received {got} USDT but need ≥ {need}. Send the rest and retry.",
+                    show_alert=True,
+                )
+            else:
+                await callback.answer(f"Not confirmed: {reason}", show_alert=True)
             return
 
-        xrocket = get_xrocket()
-        inv = await xrocket.get_invoice(inst.invoice_id)
-        status = ""
-        payments = []
-        if isinstance(inv, dict):
-            status = str(inv.get("status") or "").lower()
-            payments = inv.get("payments") or []
-        paid = status in ("paid", "completed", "success", "finished") or len(payments) > 0
+        paid_amt = Decimal(str(sweep["usdt"]))
+        inst.invoice_link = sweep.get("deposit")
+        # reuse invoice_id field for sweep tx if model has no repay_tx_hash column
+        inst.invoice_id = str(sweep.get("sweep_tx") or sweep.get("gas_tx") or "")
+        await mark_installment_paid(session, inst, paid_amount=paid_amt)
+        await session.commit()
 
-        if paid:
-            await mark_installment_paid(session, inst)
-            await session.commit()
-            await callback.answer("Payment confirmed! ✅", show_alert=True)
-            await _safe_text(
-                callback,
-                f"✅ Installment #{inst.number} paid successfully!",
-                InlineKeyboardBuilder()
-                .row(
-                    InlineKeyboardButton(
-                        text="🔙 Installments",
-                        callback_data=f"repay:loan:{inst.loan_id}",
-                    )
+        await _safe_text(
+            callback,
+            f"✅ <b>Installment #{inst.number} paid</b>\n\n"
+            f"Amount: <b>{paid_amt} USDT</b>\n"
+            f"Swept to treasury.\n"
+            f"Tx: <code>{sweep.get('sweep_tx', '-')}</code>",
+            InlineKeyboardBuilder()
+            .row(
+                InlineKeyboardButton(
+                    text="🔙 Installments",
+                    callback_data=f"repay:loan:{inst.loan_id}",
                 )
-                .as_markup(),
             )
-        else:
-            await callback.answer(
-                "Payment not detected yet. Wait ~1 min and try again.",
-                show_alert=True,
-            )
+            .as_markup(),
+        )
+    except PolygonError as e:
+        logger.error("sweep polygon error: {}", e)
+        await callback.answer(str(e)[:120], show_alert=True)
     except Exception as e:
-        logger.exception("Check payment failed")
-        await callback.answer(f"Check error: {str(e)[:80]}", show_alert=True)
+        logger.exception("verify_and_sweep failed")
+        await callback.answer(f"Error: {str(e)[:100]}", show_alert=True)
